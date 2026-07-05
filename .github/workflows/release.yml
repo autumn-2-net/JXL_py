@@ -30,7 +30,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build -G Ninja `
+          cmake -S . -B out/build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=clang-cl `
             -DCMAKE_CXX_COMPILER=clang-cl `
@@ -41,8 +41,8 @@ jobs:
 
       - name: Build native library & CLI
         run: |
-          cmake --build build --target jxlpy_native --config Release
-          cmake --build build --target jxl_cli --config Release
+          cmake --build out/build --target jxlpy_native --config Release
+          cmake --build out/build --target jxl_cli --config Release
 
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist/
@@ -51,10 +51,10 @@ jobs:
         shell: pwsh
         run: |
           $cli = @(
-            "build/libjxl/tools/cjxl.exe",
-            "build/libjxl/tools/djxl.exe",
-            "build/libjxl/tools/jxlinfo.exe",
-            "build/libjxl/tools/jxltran.exe"
+            "out/build/libjxl/tools/cjxl.exe",
+            "out/build/libjxl/tools/djxl.exe",
+            "out/build/libjxl/tools/jxlinfo.exe",
+            "out/build/libjxl/tools/jxltran.exe"
           )
           foreach ($f in $cli) {
             if (Test-Path $f) { Copy-Item $f -Destination "dist/" }
@@ -91,7 +91,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B out/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -103,16 +103,16 @@ jobs:
 
       - name: Build native library & CLI
         run: |
-          cmake --build build --target jxlpy_native --config Release
-          cmake --build build --target jxl_cli --config Release
+          cmake --build out/build --target jxlpy_native --config Release
+          cmake --build out/build --target jxl_cli --config Release
 
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist/
 
       - name: Package artifacts
         run: |
-          for f in build/libjxl/tools/cjxl build/libjxl/tools/djxl \
-                   build/libjxl/tools/jxlinfo build/libjxl/tools/jxltran; do
+          for f in out/build/libjxl/tools/cjxl out/build/libjxl/tools/djxl \
+                   out/build/libjxl/tools/jxlinfo out/build/libjxl/tools/jxltran; do
             [ -f "$f" ] && cp "$f" dist/
           done
           ls -lh dist/
