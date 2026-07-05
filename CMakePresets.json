@@ -1,0 +1,182 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+        "BUILD_TESTING": "OFF",
+        "JXL_SUPERBUILD_ENABLE_CLI": "ON",
+        "JPEGXL_ENABLE_TOOLS": "ON",
+        "JPEGXL_ENABLE_DEVTOOLS": "OFF",
+        "JPEGXL_ENABLE_FUZZERS": "OFF",
+        "JPEGXL_ENABLE_BENCHMARK": "OFF",
+        "JPEGXL_ENABLE_EXAMPLES": "OFF",
+        "JPEGXL_ENABLE_DOXYGEN": "OFF",
+        "JPEGXL_ENABLE_MANPAGES": "OFF",
+        "JPEGXL_ENABLE_JNI": "OFF",
+        "JPEGXL_ENABLE_OPENEXR": "OFF",
+        "JPEGXL_ENABLE_PLUGINS": "OFF",
+        "JPEGXL_ENABLE_VIEWERS": "OFF",
+        "JPEGXL_ENABLE_TCMALLOC": "OFF",
+        "JXL_SUPERBUILD_BUNDLE_JPEG": "ON",
+        "WITH_SIMD": "OFF",
+        "JPEGXL_ENABLE_SJPEG": "ON",
+        "JPEGXL_BUNDLE_LIBPNG": "ON"
+      }
+    },
+    {
+      "name": "windows-clang-cl-cli",
+      "displayName": "Windows clang-cl CLI",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MAKE_PROGRAM": "C:/Program Files/JetBrains/CLion 2025.2.4/bin/ninja/win/x64/ninja.exe",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "BUILD_SHARED_LIBS": "OFF"
+      }
+    },
+    {
+      "name": "windows-clang-cl-shared",
+      "displayName": "Windows clang-cl Shared Libraries",
+      "inherits": "windows-clang-cl-cli",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-cli",
+      "displayName": "Linux clang CLI",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "BUILD_SHARED_LIBS": "OFF"
+      }
+    },
+    {
+      "name": "linux-clang-shared",
+      "displayName": "Linux clang Shared Libraries",
+      "inherits": "linux-clang-cli",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc-cli",
+      "displayName": "Linux GCC CLI",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "BUILD_SHARED_LIBS": "OFF"
+      }
+    },
+    {
+      "name": "macos-clang-cli",
+      "displayName": "macOS clang CLI",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "BUILD_SHARED_LIBS": "OFF"
+      }
+    },
+    {
+      "name": "macos-clang-shared",
+      "displayName": "macOS clang Shared Libraries",
+      "inherits": "macos-clang-cli",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-cli",
+      "configurePreset": "windows-clang-cl-cli",
+      "targets": [
+        "jxl_cli"
+      ]
+    },
+    {
+      "name": "windows-libraries",
+      "configurePreset": "windows-clang-cl-shared",
+      "targets": [
+        "jxl_libraries"
+      ]
+    },
+    {
+      "name": "linux-clang-cli",
+      "configurePreset": "linux-clang-cli",
+      "targets": [
+        "jxl_cli"
+      ]
+    },
+    {
+      "name": "linux-clang-libraries",
+      "configurePreset": "linux-clang-shared",
+      "targets": [
+        "jxl_libraries"
+      ]
+    },
+    {
+      "name": "linux-gcc-cli",
+      "configurePreset": "linux-gcc-cli",
+      "targets": [
+        "jxl_cli"
+      ]
+    },
+    {
+      "name": "macos-cli",
+      "configurePreset": "macos-clang-cli",
+      "targets": [
+        "jxl_cli"
+      ]
+    },
+    {
+      "name": "macos-libraries",
+      "configurePreset": "macos-clang-shared",
+      "targets": [
+        "jxl_libraries"
+      ]
+    }
+  ]
+}
