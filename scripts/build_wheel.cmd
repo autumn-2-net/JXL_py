@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-if "%PYTHON_EXE%"=="" set "PYTHON_EXE=C:\Users\autumn\.conda\envs\py10\python.exe"
+if "%PYTHON_EXE%"=="" set "PYTHON_EXE=python"
 
 echo [jxlpy] Step 1: Building native library...
 call "%~dp0build_windows.cmd" jxlpy_native
