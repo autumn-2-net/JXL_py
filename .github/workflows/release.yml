@@ -22,27 +22,42 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel cffi numpy
 
-      - name: Configure & build native library
+      - name: Configure & build
         run: |
-          cmake -S . -B out/build/windows-clang-cl-cli -G Ninja `
+          cmake -S . -B out/build/windows -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=clang-cl `
             -DCMAKE_CXX_COMPILER=clang-cl `
             -DBUILD_SHARED_LIBS=OFF `
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
-            -DJXL_SUPERBUILD_ENABLE_CLI=OFF `
             -DWITH_SIMD=OFF
-          cmake --build out/build/windows-clang-cl-cli --target jxlpy_native --config Release
+          cmake --build out/build/windows --target jxlpy_native --config Release
+          cmake --build out/build/windows --target jxl_cli --config Release
 
       - name: Build wheel
         run: |
           python -m pip wheel . --no-deps -w dist/
+
+      - name: Collect CLI binaries
+        run: |
+          mkdir cli
+          cp out/build/windows/libjxl/tools/cjxl.exe cli/ 2>$null || true
+          cp out/build/windows/libjxl/tools/djxl.exe cli/ 2>$null || true
+          cp out/build/windows/libjxl/tools/jxlinfo.exe cli/ 2>$null || true
+          cp out/build/windows/libjxl/tools/jxltran.exe cli/ 2>$null || true
+          ls cli/
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
           name: wheel-windows
           path: dist/*.whl
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows
+          path: cli/*
 
   build-linux:
     runs-on: ubuntu-22.04
@@ -61,27 +76,43 @@ jobs:
           sudo apt-get install -y -qq clang ninja-build
           python -m pip install --upgrade pip setuptools wheel cffi numpy
 
-      - name: Configure & build native library
+      - name: Configure & build
         run: |
-          cmake -S . -B out/build/linux-clang-python -G Ninja \
+          cmake -S . -B out/build/linux -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DJXL_SUPERBUILD_ENABLE_CLI=OFF \
             -DWITH_SIMD=OFF
-          cmake --build out/build/linux-clang-python --target jxlpy_native --config Release
+          cmake --build out/build/linux --target jxlpy_native --config Release
+          cmake --build out/build/linux --target jxl_cli --config Release
 
       - name: Build wheel
         run: |
           python -m pip wheel . --no-deps -w dist/
+
+      - name: Collect CLI binaries
+        run: |
+          mkdir cli
+          cp out/build/linux/libjxl/tools/cjxl cli/ 2>/dev/null || true
+          cp out/build/linux/libjxl/tools/djxl cli/ 2>/dev/null || true
+          cp out/build/linux/libjxl/tools/jxlinfo cli/ 2>/dev/null || true
+          cp out/build/linux/libjxl/tools/jxltran cli/ 2>/dev/null || true
+          tar czf cli-linux.tar.gz -C cli .
+          ls cli/
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
           name: wheel-linux
           path: dist/*.whl
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: cli-linux.tar.gz
 
   release:
     needs: [build-windows, build-linux]
@@ -96,14 +127,14 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
-      - name: Download all wheels
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: List wheels
-        run: ls -la dist/*.whl
+      - name: List artifacts
+        run: ls -laR dist/
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -113,10 +144,20 @@ jobs:
           body: |
             Automated build from ${{ steps.tag.outputs.date }}
 
-            **Install:**
+            ## Python wheel
             ```bash
             pip install jxlpy-*.whl
             ```
-          files: dist/*.whl
+
+            ## CLI tools
+            - Windows: download `cjxl.exe`, `djxl.exe`, etc.
+            - Linux: download `cli-linux.tar.gz` and extract
+          files: |
+            dist/*.whl
+            dist/cjxl.exe
+            dist/djxl.exe
+            dist/jxlinfo.exe
+            dist/jxltran.exe
+            dist/cli-linux.tar.gz
           draft: false
           prerelease: false

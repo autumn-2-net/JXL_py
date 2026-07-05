@@ -90,8 +90,10 @@ if(JXL_PYTHON_ENABLE_NATIVE)
       "${CMAKE_BINARY_DIR}/libjxl/lib/include")
   target_link_libraries(jxlpy_native PRIVATE
       jxl
-      jxl_threads
-      jxl_extras_codec)
+      jxl_threads)
+  if(TARGET jxl_extras_codec)
+    target_link_libraries(jxlpy_native PRIVATE jxl_extras_codec)
+  endif()
   if(TARGET jxl_cms)
     target_link_libraries(jxlpy_native PRIVATE jxl_cms)
   endif()
