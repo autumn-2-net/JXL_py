@@ -2,6 +2,11 @@ name: Build & Release
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (e.g. v1.0.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -123,11 +128,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Determine tag
+      - name: Set tag
         id: tag
         run: |
-          TAG="v$(date -u +'%Y.%m.%d')"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
