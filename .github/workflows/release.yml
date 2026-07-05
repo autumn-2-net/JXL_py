@@ -1,10 +1,10 @@
-name: Build & Release
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version tag (e.g. v1.0.0)'
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
         required: true
         type: string
 
@@ -12,6 +12,7 @@ permissions:
   contents: write
 
 jobs:
+  # ── Windows ──
   build-windows:
     runs-on: windows-2022
     steps:
@@ -19,17 +20,17 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip setuptools wheel cffi numpy
+        run: python -m pip install --upgrade pip setuptools wheel cffi numpy
 
-      - name: Configure & build
+      - name: Configure CMake
         run: |
-          cmake -S . -B out/build/windows -G Ninja `
+          cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=clang-cl `
             -DCMAKE_CXX_COMPILER=clang-cl `
@@ -37,34 +38,37 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
             -DWITH_SIMD=OFF `
             -DAWK=AWK-NOTFOUND
-          cmake --build out/build/windows --target jxlpy_native --config Release
-          cmake --build out/build/windows --target jxl_cli --config Release
+
+      - name: Build native library & CLI
+        run: |
+          cmake --build build --target jxlpy_native --config Release
+          cmake --build build --target jxl_cli --config Release
 
       - name: Build wheel
-        run: |
-          python -m pip wheel . --no-deps -w dist/
+        run: python -m pip wheel . --no-deps -w dist/
 
-      - name: Collect CLI binaries
+      - name: Package artifacts
+        shell: pwsh
         run: |
-          mkdir cli
-          cp out/build/windows/libjxl/tools/cjxl.exe cli/ 2>$null || true
-          cp out/build/windows/libjxl/tools/djxl.exe cli/ 2>$null || true
-          cp out/build/windows/libjxl/tools/jxlinfo.exe cli/ 2>$null || true
-          cp out/build/windows/libjxl/tools/jxltran.exe cli/ 2>$null || true
-          ls cli/
+          $cli = @(
+            "build/libjxl/tools/cjxl.exe",
+            "build/libjxl/tools/djxl.exe",
+            "build/libjxl/tools/jxlinfo.exe",
+            "build/libjxl/tools/jxltran.exe"
+          )
+          foreach ($f in $cli) {
+            if (Test-Path $f) { Copy-Item $f -Destination "dist/" }
+          }
+          ls dist/
 
-      - name: Upload wheel artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-windows
-          path: dist/*.whl
+          name: artifacts-windows
+          path: dist/*
+          if-no-files-found: error
 
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-windows
-          path: cli/*
-
+  # ── Linux ──
   build-linux:
     runs-on: ubuntu-22.04
     steps:
@@ -72,19 +76,22 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install build tools
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq clang ninja-build
-          python -m pip install --upgrade pip setuptools wheel cffi numpy
 
-      - name: Configure & build
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip setuptools wheel cffi numpy
+
+      - name: Configure CMake
         run: |
-          cmake -S . -B out/build/linux -G Ninja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -93,78 +100,56 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DWITH_SIMD=OFF \
             -DAWK=AWK-NOTFOUND
-          cmake --build out/build/linux --target jxlpy_native --config Release
-          cmake --build out/build/linux --target jxl_cli --config Release
+
+      - name: Build native library & CLI
+        run: |
+          cmake --build build --target jxlpy_native --config Release
+          cmake --build build --target jxl_cli --config Release
 
       - name: Build wheel
-        run: |
-          python -m pip wheel . --no-deps -w dist/
+        run: python -m pip wheel . --no-deps -w dist/
 
-      - name: Collect CLI binaries
+      - name: Package artifacts
         run: |
-          mkdir cli
-          cp out/build/linux/libjxl/tools/cjxl cli/ 2>/dev/null || true
-          cp out/build/linux/libjxl/tools/djxl cli/ 2>/dev/null || true
-          cp out/build/linux/libjxl/tools/jxlinfo cli/ 2>/dev/null || true
-          cp out/build/linux/libjxl/tools/jxltran cli/ 2>/dev/null || true
-          tar czf cli-linux.tar.gz -C cli .
-          ls cli/
+          for f in build/libjxl/tools/cjxl build/libjxl/tools/djxl \
+                   build/libjxl/tools/jxlinfo build/libjxl/tools/jxltran; do
+            [ -f "$f" ] && cp "$f" dist/
+          done
+          ls -lh dist/
 
-      - name: Upload wheel artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-linux
-          path: dist/*.whl
+          name: artifacts-linux
+          path: dist/*
+          if-no-files-found: error
 
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-linux
-          path: cli-linux.tar.gz
-
-  release:
+  # ── Publish release ──
+  publish-release:
     needs: [build-windows, build-linux]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set tag
-        id: tag
-        run: |
-          echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
+          path: all-artifacts
 
-      - name: List artifacts
-        run: ls -laR dist/
+      - name: Organize release files
+        run: |
+          mkdir -p release
+          find all-artifacts -type f -exec cp {} release/ \;
+          ls -lh release/
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
-          body: |
-            Automated build from ${{ steps.tag.outputs.date }}
-
-            ## Python wheel
-            ```bash
-            pip install jxlpy-*.whl
-            ```
-
-            ## CLI tools
-            - Windows: download `cjxl.exe`, `djxl.exe`, etc.
-            - Linux: download `cli-linux.tar.gz` and extract
-          files: |
-            dist/*.whl
-            dist/cjxl.exe
-            dist/djxl.exe
-            dist/jxlinfo.exe
-            dist/jxltran.exe
-            dist/cli-linux.tar.gz
-          draft: false
-          prerelease: false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(echo "${{ inputs.tag }}" | xargs)
+          echo "Creating release with tag: $TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Automated release from CI build" \
+            --generate-notes \
+            release/*
