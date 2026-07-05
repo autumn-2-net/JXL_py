@@ -30,7 +30,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang-cl `
             -DBUILD_SHARED_LIBS=OFF `
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
-            -DWITH_SIMD=OFF
+            -DWITH_SIMD=OFF `
+            -DAWK=AWK-NOTFOUND
           cmake --build out/build/windows --target jxlpy_native --config Release
           cmake --build out/build/windows --target jxl_cli --config Release
 
@@ -84,7 +85,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++ \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DWITH_SIMD=OFF
+            -DWITH_SIMD=OFF \
+            -DAWK=AWK-NOTFOUND
           cmake --build out/build/linux --target jxlpy_native --config Release
           cmake --build out/build/linux --target jxl_cli --config Release
 
