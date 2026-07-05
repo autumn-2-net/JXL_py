@@ -78,11 +78,13 @@ import jxlpy
 | `encode` | numpy/torch/路径/bytes → JXL bytes |
 | `decode` | JXL/PNG/JPEG → numpy/torch/bytes |
 | `decode_to_png` | JXL/PNG/JPEG → PNG bytes |
-| `decode_to_jpeg` | JXL/PNG/JPEG → JPEG bytes |
-| `convert` | 通用格式转换 |
+| `decode_to_jpeg` | JXL/PNG/JPEG → JPEG bytes（自动尝试 JPEG reconstruction） |
+| `reconstruct_jpeg` | 从 JPEG lossless transcode 的 JXL 提取原始 JPEG（bit-exact） |
+| `convert` | 通用格式转换（支持 png/jpg/ppm/pgm/pam/pfm/pgx） |
 | `encode_multiframe` | 多帧序列 → JXL animation |
-| `decode_layer` | 读取非合成 layer/crop |
+| `decode_layer` | 读取非合成 layer/crop（残差帧） |
 | `decode_extra_channel` | 读取单个 extra channel |
+| `analyze_multiframe` | 分析帧序列，评估多帧压缩收益 |
 | `info` | 获取文件元数据 |
 
 ---
@@ -201,12 +203,48 @@ jpeg_bytes = jxlpy.decode_to_jpeg("image.jxl", quality=90)
 jxlpy.decode_to_jpeg("image.jxl", output="out/image.jpg", quality=95)
 ```
 
+### JPEG 无损还原
+
+当 JXL 文件是通过 JPEG lossless transcode 产生的，`decode_to_jpeg` 会自动尝试提取原始 JPEG（bit-exact）：
+
+```python
+# JPEG → JXL → JPEG (bit-exact roundtrip)
+jxl_bytes = jxlpy.encode("photo.jpg")       # 默认 lossless transcode
+original = jxlpy.decode_to_jpeg(jxl_bytes)   # 自动走 JPEG reconstruction
+
+# 显式调用（如果 JXL 不含 reconstruction data 会抛 RuntimeError）
+original = jxlpy.reconstruct_jpeg(jxl_bytes)
+```
+
+如果 JXL 不含 JPEG reconstruction data（例如从像素编码），`decode_to_jpeg` 会自动 fallback 到重新编码 JPEG。
+
 ### 通用格式转换
 
 ```python
 # 支持: png, jpg/jpeg, ppm, pgm, pam, pfm, pgx
 jxlpy.convert("input.jxl", output="out.png", format="png")
 jxlpy.convert("input.png", output="out.jpg", format="jpg", quality=85)
+```
+
+所有格式转换支持任意方向：PNG→JXL→JPEG、JPEG→JXL→PNG 等。
+
+---
+
+## 多帧分析
+
+在编码前分析帧序列，判断多帧打包是否有收益：
+
+```python
+result = jxlpy.analyze_multiframe(frames)
+print(result["recommendation"])  # "highly_beneficial" / "moderately_beneficial" / "minimal_benefit"
+print(result["avg_bbox_pct"])    # 平均 diff bbox 占画布百分比
+```
+
+返回每帧的变化统计：
+
+```python
+for f in result["frames"]:
+    print(f"frame {f['index']}: bbox={f['bbox_pct']:.1f}%, changed={f['changed_pct']:.1f}%")
 ```
 
 ---

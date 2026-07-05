@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "lib/extras/dec/decode.h"
+#include "lib/extras/dec/jxl.h"
 #include "lib/extras/enc/encode.h"
 #include "lib/extras/enc/jxl.h"
 #include "lib/extras/packed_image.h"
@@ -964,6 +965,13 @@ jxlpy_result jxlpy_reconstruct_jpeg(const uint8_t* bytes, size_t size) {
     if (status == JXL_DEC_FULL_IMAGE) {
       break;
     }
+    // Any other status (e.g. JXL_DEC_NEED_IMAGE_OUT_BUFFER, JXL_DEC_BASIC_INFO)
+    // means the file does not contain JPEG reconstruction data.
+    if (!reconstruction_available) {
+      return ErrorResult("JXL file does not contain JPEG reconstruction data");
+    }
+    // If we already got reconstruction data but hit an unexpected event, stop.
+    break;
   }
 
   if (!reconstruction_available) {
@@ -979,13 +987,6 @@ jxlpy_result jxlpy_decode_to_format(const uint8_t* bytes, size_t size,
                                     const char* extension, int quality) {
   if (bytes == nullptr || size == 0) return ErrorResult("input bytes are empty");
   if (extension == nullptr) return ErrorResult("extension is null");
-  jxl::extras::PackedPixelFile ppf;
-  jxl::extras::Codec codec = jxl::extras::Codec::kUnknown;
-  if (!jxl::extras::DecodeBytes(jxl::Bytes(bytes, size),
-                                jxl::extras::ColorHints(), &ppf, nullptr,
-                                &codec)) {
-    return ErrorResult("failed to decode input image");
-  }
   auto encoder = jxl::extras::Encoder::FromExtension(extension);
   if (!encoder) {
     return ErrorResult(std::string("unsupported output format: ") + extension);
@@ -993,6 +994,33 @@ jxlpy_result jxlpy_decode_to_format(const uint8_t* bytes, size_t size,
   if (quality >= 0 && quality <= 100) {
     encoder->SetOption("q", std::to_string(quality));
   }
+
+  jxl::extras::PackedPixelFile ppf;
+
+  if (IsJxlBytes(bytes, size)) {
+    // For JXL input, use DecodeImageJXL with the encoder's accepted formats
+    // so the decoder outputs pixels in a format the encoder can consume.
+    jxl::extras::JXLDecompressParams dparams;
+    dparams.accepted_formats = encoder->AcceptedFormats();
+    size_t decoded_bytes = 0;
+    if (!jxl::extras::DecodeImageJXL(bytes, size, dparams, &decoded_bytes,
+                                     &ppf)) {
+      return ErrorResult("failed to decode JXL image");
+    }
+  } else {
+    // For PNG/JPEG/other input, DecodeBytes works fine.
+    if (!jxl::extras::DecodeBytes(jxl::Bytes(bytes, size),
+                                  jxl::extras::ColorHints(), &ppf)) {
+      return ErrorResult("failed to decode input image");
+    }
+    // Fix endianness for non-JXL decoded images.
+    for (auto& frame : ppf.frames) {
+      if (frame.color.format.endianness == JXL_NATIVE_ENDIAN) {
+        frame.color.format.endianness = JXL_LITTLE_ENDIAN;
+      }
+    }
+  }
+
   jxl::extras::EncodedImage encoded;
   if (!encoder->Encode(ppf, &encoded, nullptr)) {
     return ErrorResult("failed to encode to target format");
