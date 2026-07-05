@@ -16,6 +16,7 @@ endif()
 
 option(JXL_SUPERBUILD_ENABLE_CLI "Build libjxl command line tools." ON)
 option(JXL_SUPERBUILD_BUNDLE_JPEG "Use bundled libjpeg-turbo for JPEG I/O." ON)
+option(JXL_PYTHON_ENABLE_NATIVE "Build the jxlpy C ABI native library." ON)
 
 # Keep the first build focused: core libraries plus the user-facing CLI.
 # Presets or users can override these cache entries when a broader build is
@@ -75,4 +76,27 @@ endforeach()
 
 if(_jxl_library_targets)
   add_custom_target(jxl_libraries DEPENDS ${_jxl_library_targets})
+endif()
+
+if(JXL_PYTHON_ENABLE_NATIVE)
+  add_library(jxlpy_native SHARED
+      native/jxlpy_native.cc
+      native/jxlpy_native.h)
+  target_compile_features(jxlpy_native PRIVATE cxx_std_17)
+  target_include_directories(jxlpy_native PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}"
+      "${JXL_SOURCE_DIR}"
+      "${JXL_SOURCE_DIR}/lib/include"
+      "${CMAKE_BINARY_DIR}/libjxl/lib/include")
+  target_link_libraries(jxlpy_native PRIVATE
+      jxl
+      jxl_threads
+      jxl_extras_codec)
+  if(TARGET jxl_cms)
+    target_link_libraries(jxlpy_native PRIVATE jxl_cms)
+  endif()
+  if(WIN32)
+    set_target_properties(jxlpy_native PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS OFF)
+  endif()
 endif()

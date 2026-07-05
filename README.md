@@ -1,8 +1,8 @@
 # jxl_python
 
 This repository is a local superbuild around `libjxl`. The current milestone is
-to build and validate the JPEG XL command line tools and native libraries first.
-The Python wrapper layer is intentionally left for the next design pass.
+to build and validate the JPEG XL command line tools, native libraries, and a
+first Python/CFFI wrapper.
 
 ## Current Status
 
@@ -20,6 +20,14 @@ Built and tested CLI targets:
 - `jxlinfo`
 - `jxltran`
 
+The first Python wrapper target is also built and smoke-tested:
+
+- `jxlpy_native`
+- `jxlpy.encode`
+- `jxlpy.decode`
+- `jxlpy.encode_multiframe`
+- `jxlpy.decode_layer`
+
 The tested Windows CLI build output is:
 
 ```text
@@ -32,7 +40,11 @@ out/build/windows-clang-cl-cli/libjxl/tools/
 .
 +-- CMakeLists.txt          # Thin superbuild wrapper around libjxl
 +-- CMakePresets.json      # Windows/Linux/macOS configure and build presets
++-- docs/                  # Project notes and Python wrapper usage
++-- jxlpy/                 # Python CFFI package
 +-- libjxl/                # Vendored libjxl source tree
++-- native/                # C ABI shim loaded by CFFI
++-- scripts/               # Build, smoke test, and benchmark helpers
 +-- test_img/              # Local image samples used for validation
 `-- out/                   # Generated build and test outputs, ignored by Git
 ```
@@ -97,6 +109,41 @@ CMake configuration. The local patch builds zlib from a copied build-directory
 source tree to avoid modifying vendored source files.
 
 ## Windows Build
+
+For the Python native shim, use the helper script:
+
+```bat
+.\scripts\build_windows.cmd jxlpy_native
+```
+
+Then run the smoke test with the known conda environment:
+
+```bat
+.\scripts\smoke_jxlpy.cmd
+```
+
+Detailed Python wrapper notes are in:
+
+```text
+docs/JXLPY_USAGE.md
+```
+
+Linux/macOS helper scripts are also present:
+
+```bash
+./scripts/build_linux.sh jxlpy_native
+./scripts/build_macos.sh jxlpy_native
+```
+
+Wheel helper scripts:
+
+```bash
+./scripts/build_wheel.sh
+```
+
+```bat
+.\scripts\build_wheel.cmd
+```
 
 If CMake is not on `PATH`, use CLion's bundled CMake explicitly:
 
