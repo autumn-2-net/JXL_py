@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "lib/extras/dec/decode.h"
+#include "lib/extras/enc/encode.h"
 #include "lib/extras/enc/jxl.h"
 #include "lib/extras/packed_image.h"
 #include "lib/jxl/base/span.h"
@@ -529,9 +530,11 @@ jxlpy_result jxlpy_decode_jxl(const uint8_t* bytes, size_t size,
       frame_index < 0 ? 0u : static_cast<uint32_t>(frame_index);
   bool have_info = false;
   bool have_current_header = false;
+  bool got_target = false;
   JxlBasicInfo info = {};
   JxlFrameHeader current_header = {};
   uint32_t current_frame = 0;
+  uint32_t total_frames = 0;
   uint32_t output_channels = 0;
   uint32_t output_dtype = 0;
   JxlPixelFormat format = {};
@@ -616,23 +619,24 @@ jxlpy_result jxlpy_decode_jxl(const uint8_t* bytes, size_t size,
         result.layer_xsize = current_header.layer_info.xsize;
         result.layer_ysize = current_header.layer_info.ysize;
         result.duration = current_header.duration;
-        break;
+        got_target = true;
       }
       ++current_frame;
+      total_frames = current_frame;
       current_buffer.clear();
       have_current_header = false;
       continue;
     }
   }
 
-  if (!result.ok) return ErrorResult("frame index out of range");
+  if (!got_target) return ErrorResult("frame index out of range");
   result.size = final_buffer.size();
   if (!final_buffer.empty()) {
     result.data = static_cast<uint8_t*>(std::malloc(final_buffer.size()));
     if (result.data == nullptr) return ErrorResult("out of memory");
     std::memcpy(result.data, final_buffer.data(), final_buffer.size());
   }
-  result.num_frames = std::max<uint32_t>(target_frame + 1, result.num_frames);
+  result.num_frames = total_frames;
   return result;
 }
 
@@ -670,11 +674,13 @@ jxlpy_result jxlpy_decode_extra_channel_jxl(
       frame_index < 0 ? 0u : static_cast<uint32_t>(frame_index);
   bool have_info = false;
   bool have_current_header = false;
+  bool got_target = false;
   JxlBasicInfo info = {};
   JxlExtraChannelInfo extra_info = {};
   std::string extra_name;
   JxlFrameHeader current_header = {};
   uint32_t current_frame = 0;
+  uint32_t total_frames = 0;
   uint32_t image_dtype = 0;
   uint32_t extra_dtype = 0;
   JxlPixelFormat image_format = {};
@@ -801,9 +807,10 @@ jxlpy_result jxlpy_decode_extra_channel_jxl(
         result.layer_xsize = current_header.layer_info.xsize;
         result.layer_ysize = current_header.layer_info.ysize;
         result.duration = current_header.duration;
-        break;
+        got_target = true;
       }
       ++current_frame;
+      total_frames = current_frame;
       image_buffer.clear();
       current_extra_buffer.clear();
       have_current_header = false;
@@ -811,7 +818,7 @@ jxlpy_result jxlpy_decode_extra_channel_jxl(
     }
   }
 
-  if (!result.ok) return ErrorResult("frame index out of range");
+  if (!got_target) return ErrorResult("frame index out of range");
   result.size = final_extra_buffer.size();
   if (!final_extra_buffer.empty()) {
     result.data = static_cast<uint8_t*>(std::malloc(final_extra_buffer.size()));
@@ -821,7 +828,7 @@ jxlpy_result jxlpy_decode_extra_channel_jxl(
   if (!extra_name.empty()) {
     result.extra_channel_name = DupString(extra_name);
   }
-  result.num_frames = std::max<uint32_t>(target_frame + 1, result.num_frames);
+  result.num_frames = total_frames;
   return result;
 }
 
@@ -881,6 +888,7 @@ jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size) {
       result.ysize = info.ysize;
       result.bits_per_sample = info.bits_per_sample;
       result.exponent_bits_per_sample = info.exponent_bits_per_sample;
+      result.dtype = DefaultDecodeDtype(info);
       result.have_animation = info.have_animation;
       result.num_channels = info.num_color_channels + (info.alpha_bits ? 1 : 0);
       result.num_extra_channels = info.num_extra_channels;
@@ -892,6 +900,34 @@ jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size) {
   }
   result.num_frames = frames == 0 ? 1 : frames;
   return result;
+}
+
+jxlpy_result jxlpy_decode_to_format(const uint8_t* bytes, size_t size,
+                                    const char* extension, int quality) {
+  if (bytes == nullptr || size == 0) return ErrorResult("input bytes are empty");
+  if (extension == nullptr) return ErrorResult("extension is null");
+  jxl::extras::PackedPixelFile ppf;
+  jxl::extras::Codec codec = jxl::extras::Codec::kUnknown;
+  if (!jxl::extras::DecodeBytes(jxl::Bytes(bytes, size),
+                                jxl::extras::ColorHints(), &ppf, nullptr,
+                                &codec)) {
+    return ErrorResult("failed to decode input image");
+  }
+  auto encoder = jxl::extras::Encoder::FromExtension(extension);
+  if (!encoder) {
+    return ErrorResult(std::string("unsupported output format: ") + extension);
+  }
+  if (quality >= 0 && quality <= 100) {
+    encoder->SetOption("q", std::to_string(quality));
+  }
+  jxl::extras::EncodedImage encoded;
+  if (!encoder->Encode(ppf, &encoded, nullptr)) {
+    return ErrorResult("failed to encode to target format");
+  }
+  if (encoded.bitstreams.empty() || encoded.bitstreams[0].empty()) {
+    return ErrorResult("encoder produced empty output");
+  }
+  return BytesResult(encoded.bitstreams[0]);
 }
 
 }  // extern "C"

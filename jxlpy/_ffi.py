@@ -123,6 +123,9 @@ ffi.cdef(
         const uint8_t* bytes, size_t size, int frame_index);
 
     jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size);
+
+    jxlpy_result jxlpy_decode_to_format(
+        const uint8_t* bytes, size_t size, const char* extension, int quality);
     """
 )
 
@@ -174,15 +177,20 @@ def _add_dll_dirs(path: Path) -> None:
 
 def _load():
     attempted: list[str] = []
+    errors: list[str] = []
     for path in _candidate_paths():
         attempted.append(str(path))
         if path.exists():
             _add_dll_dirs(path)
-            return ffi.dlopen(str(path))
-    raise RuntimeError(
-        "Cannot find jxlpy_native. Build it with CMake first or set "
-        "JXLPY_NATIVE_LIB. Tried:\n" + "\n".join(attempted)
-    )
+            try:
+                return ffi.dlopen(str(path))
+            except OSError as e:
+                errors.append(f"  {path}: {e}")
+    msg = "Cannot find or load jxlpy_native. Build it with CMake first or set JXLPY_NATIVE_LIB."
+    msg += "\nSearched:\n" + "\n".join(f"  {p}" for p in attempted)
+    if errors:
+        msg += "\nLoad errors:\n" + "\n".join(errors)
+    raise RuntimeError(msg)
 
 
 lib = _load()

@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Python CFFI bindings and helpers for libjxl"
 requires-python = ">=3.10"
 dependencies = [
-  "cffi",
-  "numpy",
+  "cffi>=1.15",
+  "numpy>=1.22",
 ]
 
 [project.optional-dependencies]

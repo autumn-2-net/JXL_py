@@ -44,12 +44,6 @@ class _NativeResult:
     meta: dict[str, Any]
 
 
-def _is_pathlike(value: Any) -> bool:
-    return isinstance(value, (str, bytes, Path)) and not isinstance(
-        value, (bytearray, memoryview)
-    )
-
-
 def _read_bytes(src: Any) -> bytes:
     if isinstance(src, Path):
         return src.read_bytes()
@@ -545,18 +539,6 @@ def decode_layer(
     )
 
 
-def _bbox_changed(current: np.ndarray, reference: np.ndarray):
-    changed = np.any(current != reference, axis=2)
-    if not np.any(changed):
-        return 0, 0, 1, 1
-    ys, xs = np.nonzero(changed)
-    x0 = int(xs.min())
-    y0 = int(ys.min())
-    x1 = int(xs.max()) + 1
-    y1 = int(ys.max()) + 1
-    return x0, y0, x1, y1
-
-
 def _frame_arrays(frames: Iterable[Any], *, layout: str) -> list[np.ndarray]:
     arrays = []
     for frame in frames:
@@ -761,9 +743,44 @@ def encode_multiframe(
 
 
 def info(src: Any) -> dict[str, Any]:
+    """Return metadata dict for a JXL, PNG or JPEG file/bytes."""
     data = _read_bytes(src)
     c_data = ffi.from_buffer(data)
     if _is_jxl(data):
         return _consume_result(lib.jxlpy_info(c_data, len(data))).meta
     native = _consume_result(lib.jxlpy_decode_image_bytes(c_data, len(data), 0))
     return native.meta
+
+
+def convert(
+    src: Any,
+    output: str | Path | None = None,
+    *,
+    format: str = "png",
+    quality: int = -1,
+) -> bytes | Path:
+    """Decode any supported input and re-encode to a target format.
+
+    Supported output formats: png, jpeg/jpg, ppm, pgm, pam, pfm, pgx.
+    Quality (0-100) only applies to JPEG output.
+    """
+    data = _read_bytes(src)
+    ext = format.lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    c_data = ffi.from_buffer(data)
+    c_ext = ffi.new("char[]", ext.encode("utf-8"))
+    result = lib.jxlpy_decode_to_format(c_data, len(data), c_ext, int(quality))
+    return _write_or_return(_consume_result(result).data, output)
+
+
+def decode_to_png(src: Any, output: str | Path | None = None) -> bytes | Path:
+    """Decode JXL/PNG/JPEG to PNG bytes or write to file."""
+    return convert(src, output, format="png")
+
+
+def decode_to_jpeg(
+    src: Any, output: str | Path | None = None, *, quality: int = 95
+) -> bytes | Path:
+    """Decode JXL/PNG/JPEG to JPEG bytes or write to file."""
+    return convert(src, output, format="jpg", quality=quality)

@@ -1,46 +1,29 @@
-# jxlpy Python/CFFI 使用说明
+# jxlpy 使用文档
 
-本文记录当前 `jxlpy` 包的构建方式、API 形状和多帧 delta 语义。
+`jxlpy` 是围绕 libjxl 的 Python/CFFI 绑定。通过 native shim（`jxlpy_native`）直接调用 libjxl C API，不依赖命令行工具。
 
-## 当前定位
+---
 
-`jxlpy` 是本仓库里围绕 libjxl 的 Python/CFFI 包装层：
+## 安装与构建
 
-- native 层：`native/jxlpy_native.cc`
-- CFFI loader：`jxlpy/_ffi.py`
-- Python API：`jxlpy/api.py`
+### 依赖
 
-Python 层不调用 `cjxl.exe` / `djxl.exe`。它通过 CFFI 加载
-`jxlpy_native.dll`，native 层再调用 libjxl C API 和 libjxl extras。
+- Python >= 3.10
+- `numpy >= 1.22`
+- `cffi >= 1.15`
+- `torch`（可选，仅传入 tensor 或 `out="torch"` 时使用）
 
-当前已跑通：
+### 构建 native 库
 
-- numpy `uint8` RGBA 单帧 encode/decode 无损回读
-- 多帧 `REPLACE + crop` delta encode
-- coalesced 完整帧读取
-- non-coalesced layer/crop 读取
-- torch 懒加载适配
-
-## 构建脚本
-
-### Windows
-
-默认使用用户当前机器上的 CLion CMake/Ninja 路径：
+#### Windows
 
 ```bat
 .\scripts\build_windows.cmd jxlpy_native
 ```
 
-脚本默认值：
+产物：`out/build/windows-clang-cl-cli/jxlpy_native.dll`
 
-```bat
-CMAKE_EXE=C:\Program Files\JetBrains\CLion 2025.2.4\bin\cmake\win\x64\bin\cmake.exe
-NINJA_EXE=C:\Program Files\JetBrains\CLion 2025.2.4\bin\ninja\win\x64\ninja.exe
-BUILD_DIR=out\build\windows-clang-cl-cli
-TARGET=jxlpy_native
-```
-
-如果路径不同，可以覆盖环境变量：
+环境变量可覆盖 CMake/Ninja 路径：
 
 ```bat
 set CMAKE_EXE=D:\path\to\cmake.exe
@@ -48,238 +31,239 @@ set NINJA_EXE=D:\path\to\ninja.exe
 .\scripts\build_windows.cmd jxlpy_native
 ```
 
-构建产物：
-
-```text
-out/build/windows-clang-cl-cli/jxlpy_native.dll
-```
-
-### Linux
+#### Linux
 
 ```bash
 ./scripts/build_linux.sh jxlpy_native
 ```
 
-默认使用：
+产物：`out/build/linux-clang-python/libjxlpy_native.so`
 
-```text
-clang / clang++
-out/build/linux-clang-python
-```
-
-可覆盖：
-
-```bash
-CMAKE_C_COMPILER=gcc CMAKE_CXX_COMPILER=g++ ./scripts/build_linux.sh jxlpy_native
-```
-
-### macOS
+#### macOS
 
 ```bash
 ./scripts/build_macos.sh jxlpy_native
 ```
 
-默认使用：
+产物：`out/build/macos-clang-python/libjxlpy_native.dylib`
 
-```text
-clang / clang++
-out/build/macos-clang-python
-```
-
-Linux/macOS 脚本是按跨平台 CMake target 写的，当前仓库已提供入口，但本机只验证了 Windows。
-
-### Wheel
-
-Windows：
+### Wheel 打包
 
 ```bat
 .\scripts\build_wheel.cmd
 ```
 
-Linux/macOS：
-
 ```bash
 ./scripts/build_wheel.sh
 ```
 
-wheel 构建逻辑：
+`setup.py` 自动从 `out/build/` 查找 native 库并复制到 wheel 中。默认静态链接 libjxl。
 
-- 先构建 `jxlpy_native`
-- `setup.py bdist_wheel` 会从 `out/build/**` 查找当前平台 native 库
-- 找到后复制到 wheel 的 `jxlpy/` 包目录中
+### 环境变量
 
-默认 native target 使用 `BUILD_SHARED_LIBS=OFF`，也就是尽量把 libjxl 静态链接进 `jxlpy_native`。如果改成 shared lib wheel，还需要额外处理依赖库拷贝、rpath/auditwheel/delocate。
+| 变量 | 作用 |
+|---|---|
+| `JXLPY_NATIVE_LIB` | 直接指定 native 库路径，跳过自动查找 |
 
-## Python 环境
+---
 
-当前验证使用：
-
-```text
-C:\Users\autumn\.conda\envs\py10\python.exe
-```
-
-依赖：
-
-- `numpy`
-- `cffi`
-- `torch` 可选；只有传入 tensor 或 `out="torch"` 时才 import
-
-smoke test：
-
-```bat
-.\scripts\smoke_jxlpy.cmd
-```
-
-期望输出包含：
-
-```text
-single_shape (16, 16, 4) uint8 True
-multi_frame2 (16, 16, 4) uint8 True
-layer1 (4, 4, 4) True 4 4
-```
-
-## 基础 API
+## API 概览
 
 ```python
 import jxlpy
+```
+
+| 函数 | 功能 |
+|---|---|
+| `encode` | numpy/torch/路径/bytes → JXL bytes |
+| `decode` | JXL/PNG/JPEG → numpy/torch/bytes |
+| `decode_to_png` | JXL/PNG/JPEG → PNG bytes |
+| `decode_to_jpeg` | JXL/PNG/JPEG → JPEG bytes |
+| `convert` | 通用格式转换 |
+| `encode_multiframe` | 多帧序列 → JXL animation |
+| `decode_layer` | 读取非合成 layer/crop |
+| `decode_extra_channel` | 读取单个 extra channel |
+| `info` | 获取文件元数据 |
+
+---
+
+## 编码
+
+### 从 numpy 数组编码
+
+```python
 import numpy as np
 
 rgba = np.zeros((256, 256, 4), dtype=np.uint8)
 rgba[..., 3] = 255
 
+# 返回 bytes
 jxl_bytes = jxlpy.encode(rgba)
-decoded = jxlpy.decode(jxl_bytes)
-```
 
-写入文件：
-
-```python
+# 写入文件
 jxlpy.encode(rgba, output="out/image.jxl")
 ```
 
-从路径或 bytes 编码：
+### 从文件路径/bytes 编码
 
 ```python
-jxl_bytes = jxlpy.encode("test_img/input.png")
+# 路径 → JXL（JPEG 输入自动走 lossless transcode）
+jxl_bytes = jxlpy.encode("input.png")
+jxl_bytes = jxlpy.encode("input.jpg")
 
-with open("test_img/input.jpg", "rb") as f:
+# bytes → JXL
+with open("input.jpg", "rb") as f:
     jxl_bytes = jxlpy.encode(f.read())
 ```
 
-读取为 torch：
+### 从 torch tensor 编码
 
 ```python
-tensor = jxlpy.decode(jxl_bytes, out="torch")
+import torch
+
+tensor = torch.zeros(256, 256, 4, dtype=torch.uint8)
+jxl_bytes = jxlpy.encode(tensor)
+
+# CHW layout
+tensor_chw = torch.zeros(4, 256, 256, dtype=torch.uint8)
+jxl_bytes = jxlpy.encode(tensor_chw, layout="chw")
 ```
 
-返回元信息：
+### 编码参数
+
+```python
+jxlpy.encode(
+    src,
+    output=None,          # 输出路径，None 返回 bytes
+    layout="auto",        # "auto" | "hwc" | "chw"
+    lossless=None,        # None → 根据 distance 自动判断
+    distance=None,        # None → lossless；> 0 → lossy
+    alpha_distance=0.0,   # alpha 通道距离
+    effort=7,             # 编码努力（1-10）
+    modular=None,         # None=auto, 0=VarDCT, 1=modular
+    level=-1,             # -1=auto, 5 或 10
+    threads=0,            # 0=默认线程数
+    use_container=False,  # 是否使用容器格式
+    bits_per_sample=0,    # 0=自动
+    extra_channels=None,  # 附加通道列表
+)
+```
+
+**默认行为**：未传 `distance` 时 `lossless=True`。传入 JPEG 文件时自动使用 lossless JPEG transcode。
+
+### 支持的 dtype
+
+| numpy dtype | 用途 |
+|---|---|
+| `uint8` | 8-bit 标准 |
+| `uint16` | 16-bit HDR/深度 |
+| `float16` | 半精度浮点 |
+| `float32` | 全精度浮点 |
+
+---
+
+## 解码
+
+### 解码为 numpy
+
+```python
+arr = jxlpy.decode("image.jxl")                 # numpy ndarray (H, W, C)
+arr = jxlpy.decode(jxl_bytes)                    # 从 bytes 解码
+arr = jxlpy.decode("image.png")                  # PNG 也支持
+```
+
+### 解码为 torch
+
+```python
+tensor = jxlpy.decode(jxl_bytes, out="torch")    # torch.Tensor
+```
+
+### 带元信息
 
 ```python
 arr, meta = jxlpy.decode(jxl_bytes, return_info=True)
-print(meta["xsize"], meta["ysize"], meta["num_frames"])
+# meta: {"xsize", "ysize", "num_channels", "num_frames", "have_animation", ...}
 ```
 
-## 编码参数
-
-高层 API 默认走安全无损：
-
-- 数组/PNG：pixel-lossless
-- JPEG 文件：lossless JPEG transcode 优先
-- 有损必须显式传 `distance`
-
-常用参数：
+### 解码为 PNG/JPEG 文件
 
 ```python
-jxlpy.encode(
-    rgba,
-    lossless=True,
-    effort=7,
-    modular=None,
-    level=-1,
-    threads=0,
-)
+# JXL → PNG bytes
+png_bytes = jxlpy.decode_to_png("image.jxl")
+
+# JXL → PNG 文件
+jxlpy.decode_to_png("image.jxl", output="out/image.png")
+
+# JXL → JPEG bytes（可设置质量）
+jpeg_bytes = jxlpy.decode_to_jpeg("image.jxl", quality=90)
+
+# JXL → JPEG 文件
+jxlpy.decode_to_jpeg("image.jxl", output="out/image.jpg", quality=95)
 ```
 
-有损示例：
+### 通用格式转换
 
 ```python
-jxlpy.encode(
-    rgba,
-    lossless=False,
-    distance=1.0,
-    effort=7,
-)
+# 支持: png, jpg/jpeg, ppm, pgm, pam, pfm, pgx
+jxlpy.convert("input.jxl", output="out.png", format="png")
+jxlpy.convert("input.png", output="out.jpg", format="jpg", quality=85)
 ```
 
-参数说明：
+---
 
-- `lossless`: 是否无损；默认 `distance is None` 时为 True
-- `distance`: libjxl 感知距离；传入后可启用有损
-- `alpha_distance`: alpha 通道距离
-- `effort`: 编码努力等级
-- `modular`: `None` 表示交给 libjxl；`0/1` 强制关闭/开启
-- `level`: `-1` 自动；`5` 或 `10` 显式指定 codestream level
-- `threads`: `0` 使用 libjxl 默认线程数
+## 多帧 / 动画
 
-## 多帧 / 图层
-
-多帧编码：
+### 编码
 
 ```python
-frames = [frame0, frame1, frame2]
+frames = [frame0, frame1, frame2]  # numpy 数组列表
+
 jxl_bytes = jxlpy.encode_multiframe(
     frames,
-    durations=1,
-    tps=(1000, 1),
-    reference="auto",
+    durations=1,            # 统一 duration 或逐帧列表 [1, 2, 1]
+    tps=(1000, 1),          # ticks per second (numerator, denominator)
+    reference="auto",       # "auto" | "first" | "previous" | "none"
+    min_crop_ratio=0.98,    # crop 面积 < 全图 × ratio 时启用裁剪
+    lossless=True,
+    effort=7,
 )
 ```
 
-读取完整合成帧：
+帧可以是 numpy 数组、torch tensor、文件路径或 bytes。
+
+### Delta 策略
+
+| `reference` | 行为 |
+|---|---|
+| `"auto"` | 比较上一帧和首帧 reference，选 bbox 更小的 |
+| `"first"` | 仅比较首帧 |
+| `"previous"` | 仅比较上一帧 |
+| `"none"` / `"full"` | 不做 delta，每帧全尺寸 |
+
+- blend mode 固定使用 `JXL_BLEND_REPLACE`
+- diff bbox 比较 **所有通道**（含 alpha=0 的 RGB 和 extra channels）
+- 这保证 lossless 场景下 invisible pixels 也精确还原
+
+### 解码指定帧
 
 ```python
+# 读取合成完整帧（默认）
 frame2 = jxlpy.decode(jxl_bytes, frame=2, coalesced=True)
-```
 
-读取内部 layer/crop：
-
-```python
+# 读取原始 layer/crop（残差裁剪区域）
 layer, meta = jxlpy.decode_layer(jxl_bytes, layer=1)
-print(meta["layer_have_crop"], meta["crop_x0"], meta["crop_y0"])
+print(meta["layer_have_crop"])   # True
+print(meta["crop_x0"], meta["crop_y0"])
+print(layer.shape)               # 裁剪后的尺寸
 ```
 
-当前 delta 策略：
-
-- 第一帧保存完整图
-- 后续帧比较参考帧并计算 changed bbox
-- bbox 足够小时只写 crop layer
-- blend mode 使用 `JXL_BLEND_REPLACE`
-- 默认 `reference="auto"` 会在上一帧 reference 和首帧 reference 中选 bbox 更小的候选
-
-这不是 libjxl 自动跨帧预测，而是 wrapper 自己做预处理。libjxl 本身不会稳定自动把 full-size 多帧变成差分层。
-
-## 透明图和精确性
-
-lossless 场景默认按字节精确思路处理：
-
-- diff bbox 比较所有通道
-- 包括 `alpha=0` 区域里的 RGB
-- 不用 `BLEND transparent black trick` 作为主方案
-- 精确还原优先使用 `REPLACE + crop`
-
-这对训练数据、归档数据和需要保留 invisible RGB 的 RGBA 图比较重要。
+---
 
 ## Extra Channels
 
-主图像数组只自动识别 1/2/3/4 通道：
+用于深度图、mask、热图、训练标签等非颜色数据平面。
 
-- `H x W`
-- `H x W x C`
-- `C x H x W`，当 `C <= 4` 时可自动识别
-
-`extra_channels` 不等于“自动拆 RGB/RGBA”。它应该用于深度、mask、第二 alpha、热图、训练标签等非颜色平面。
-
-显式 extra channel API 已实现：
+### 编码
 
 ```python
 rgb = np.zeros((256, 256, 3), dtype=np.uint8)
@@ -295,76 +279,110 @@ jxl_bytes = jxlpy.encode(
 )
 ```
 
-支持的 spec 形式：
+支持的 spec 格式：
 
 ```python
-extra_channels=[plane]
-extra_channels=[("name", plane)]
-extra_channels=[("name", "selection_mask", plane)]
-extra_channels=[{"name": "depth", "type": "depth", "data": plane}]
+plane                                         # 匿名 unknown 类型
+("name", plane)                               # 命名
+("name", "type", plane)                       # 命名 + 类型
+{"name": "...", "type": "...", "data": plane} # dict 形式
 ```
 
-支持的 `type`：
+支持的类型：`alpha`, `depth`, `spot_color`, `selection_mask`, `black`, `cfa`, `thermal`, `unknown`, `optional`
 
-```text
-alpha, depth, spot_color, selection_mask, black, cfa, thermal, unknown, optional
-```
-
-读取单个 extra channel：
+### 解码
 
 ```python
-mask, meta = jxlpy.decode_extra_channel(jxl_bytes, 1)
-print(mask.shape, meta["extra_channel_type"], meta["extra_channel_name"])
-```
+# 单个 extra channel
+plane, meta = jxlpy.decode_extra_channel(jxl_bytes, index=1)
 
-注意：RGBA 图的 alpha 在 JXL 里也是 extra channel，通常 index 0 是 alpha；用户传入的第一个 extra channel 会排在 alpha 后面。所以 RGBA + 一个 mask 时，mask 通常是 index 1。
-
-读取主图时一起返回非 alpha extra channels：
-
-```python
+# 主图 + 所有 extra channels
 image, meta = jxlpy.decode(
     jxl_bytes,
     return_info=True,
     return_extra_channels=True,
 )
-
-for channel in meta["extra_channels"]:
-    print(channel["name"], channel["type"], channel["data"].shape)
+for ch in meta["extra_channels"]:
+    print(ch["name"], ch["type"], ch["data"].shape)
 ```
 
-默认会跳过 alpha extra，避免和主图 RGBA alpha 重复。需要包含 alpha 时：
+> **注意**：RGBA 图的 alpha 是 JXL extra channel index 0。用户附加的 extra channel 从 index 1 开始。默认 `decode(return_extra_channels=True)` 跳过 alpha extra，设 `include_alpha_extra=True` 包含。
+
+### 多帧 extra channels
 
 ```python
-image, meta = jxlpy.decode(
-    jxl_bytes,
-    return_info=True,
-    return_extra_channels=True,
-    include_alpha_extra=True,
-)
-```
+masks = [mask0, mask1, mask2]  # 逐帧 list，或单个 array 广播到所有帧
 
-多帧 extra channel 支持逐帧数组。wrapper 会用主图同一个 crop bbox 裁剪 extra plane：
-
-```python
 jxl_bytes = jxlpy.encode_multiframe(
     frames,
-    reference="auto",
-    extra_channels=[
-        ("mask", "selection_mask", [mask0, mask1, mask2]),
-    ],
+    extra_channels=[("mask", "selection_mask", masks)],
 )
 ```
 
-仍然不把任意 `C` 维 tensor 自动全部塞进 JXL extra channels，原因是：
+---
 
-- 会改变 JXL level 需求
-- 解码时需要保留每个通道的语义
-- Level 5 只适合少量 extra channels
-- Level 10 兼容性更弱
+## 元数据查询
 
-## 当前限制
+```python
+meta = jxlpy.info("image.jxl")
+# {
+#   "xsize": 1920,
+#   "ysize": 1080,
+#   "num_channels": 4,
+#   "bits_per_sample": 8,
+#   "dtype": dtype('uint8'),
+#   "num_frames": 10,
+#   "have_animation": True,
+#   "num_extra_channels": 2,
+#   ...
+# }
+```
 
-- wheel 打包脚本已提供，但还没有做完整 `cibuildwheel` CI 流水线。
-- Linux/macOS 构建脚本已提供，但 Python native wheel 尚未在这些平台验证。
-- 多帧 `reference="auto"` 是 bbox 面积启发式，不是熵编码后真实大小搜索。
-- 暂未做 signed int16 语义；需要用户自行映射到 `uint16` 或使用 float。
+也接受 PNG/JPEG 输入。
+
+---
+
+## Smoke Test
+
+```bat
+.\scripts\smoke_jxlpy.cmd
+```
+
+```bash
+python scripts/smoke_jxlpy.py
+```
+
+---
+
+## 架构
+
+```
+jxlpy/
+├── __init__.py         # 公开 API 导出
+├── _ffi.py             # CFFI 加载 native 库
+└── api.py              # Python 高层接口
+
+native/
+├── jxlpy_native.h      # C ABI 声明
+└── jxlpy_native.cc     # 调用 libjxl C API 和 libjxl extras
+```
+
+Python 层通过 CFFI `dlopen` 加载编译好的 `jxlpy_native`（dll/so/dylib），不依赖 CLI 工具。
+
+---
+
+## 注意事项
+
+- **透明图精确性**：lossless 模式下 diff 比较包含 alpha=0 区域的 RGB，使用 `REPLACE + crop` 而非 `BLEND`，保证 invisible pixels 精确还原。
+- **layout 歧义**：对于 `(4, 4, 4)` 等方形小尺寸 array，auto layout 可能误判通道轴。请显式传 `layout="chw"` 或 `layout="hwc"`。
+- **CLI 独立**：`cjxl`/`djxl`/`jxlinfo`/`jxltran` 与 `jxlpy_native` 共享同一 libjxl 源码树但各自独立构建，互不影响。
+
+---
+
+## 限制
+
+- wheel CI（`cibuildwheel`）尚未配置。
+- Linux/macOS native wheel 尚未实际验证。
+- 多帧 delta 基于 bbox 面积启发式，非熵编码后最优搜索。
+- 不支持 signed int16；需自行映射到 `uint16` 或 float。
+- `decode(return_extra_channels=True)` 对每个 extra channel 单独解码文件，大量 extra channels 时性能不佳。
