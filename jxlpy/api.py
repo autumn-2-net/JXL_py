@@ -496,7 +496,7 @@ def _ec_data_to_output(ec_data: bytes, ec_meta: dict[str, Any], out: str):
     if dtype is None:
         raise RuntimeError("native decoder returned an unknown dtype for extra channel")
     arr = np.frombuffer(ec_data, dtype=dtype)
-    arr = arr.reshape(ec_meta.get("ysize", 0), ec_meta.get("xsize", 0))
+    arr = arr.reshape(ec_meta["ysize"], ec_meta["xsize"])
     if out == "numpy":
         return arr.copy()
     if out == "torch":
@@ -573,7 +573,8 @@ def decode(
         for ec in extras:
             if not include_alpha_extra and ec["type"] == "alpha":
                 continue
-            ec_out = _ec_data_to_output(ec["data"], {**ec, **meta}, out if out in ("numpy", "torch") else "raw")
+            ec_meta = {**ec, "xsize": meta["xsize"], "ysize": meta["ysize"]}
+            ec_out = _ec_data_to_output(ec["data"], ec_meta, out if out in ("numpy", "torch") else "raw")
             ec_list.append({
                 "index": ec["index"],
                 "name": ec["name"],
@@ -605,6 +606,9 @@ def decode(
             value = torch.from_numpy(arr.copy())
         else:
             raise ValueError("out must be 'numpy', 'torch' or 'raw'")
+
+    if return_extra_channels:
+        native.meta["extra_channels"] = []
 
     return (value, native.meta) if (return_info or return_extra_channels) else value
 
