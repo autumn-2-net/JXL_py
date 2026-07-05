@@ -119,6 +119,47 @@ ffi.cdef(
         const uint8_t* bytes, size_t size, int frame_index, int coalesced,
         uint32_t extra_channel_index, uint32_t requested_dtype);
 
+    typedef struct {
+      uint32_t extra_channel_index;
+      uint32_t extra_channel_type;
+      uint32_t bits_per_sample;
+      uint32_t exponent_bits_per_sample;
+      uint32_t dtype;
+      char* extra_channel_name;
+      uint8_t* data;
+      size_t size;
+    } jxlpy_extra_channel_result;
+
+    typedef struct {
+      int ok;
+      char* error;
+      uint8_t* color_data;
+      size_t color_size;
+      uint32_t xsize;
+      uint32_t ysize;
+      uint32_t num_channels;
+      uint32_t dtype;
+      uint32_t bits_per_sample;
+      uint32_t exponent_bits_per_sample;
+      uint32_t num_frames;
+      uint32_t frame_index;
+      uint32_t have_animation;
+      uint32_t layer_have_crop;
+      int32_t crop_x0;
+      int32_t crop_y0;
+      uint32_t layer_xsize;
+      uint32_t layer_ysize;
+      uint32_t duration;
+      uint32_t num_extra_channels;
+      jxlpy_extra_channel_result* extra_channels;
+    } jxlpy_decode_all_result;
+
+    jxlpy_decode_all_result jxlpy_decode_all_jxl(
+        const uint8_t* bytes, size_t size, int frame_index, int coalesced,
+        uint32_t requested_channels, uint32_t requested_dtype);
+
+    void jxlpy_free_decode_all_result(jxlpy_decode_all_result* result);
+
     jxlpy_result jxlpy_decode_image_bytes(
         const uint8_t* bytes, size_t size, int frame_index);
 

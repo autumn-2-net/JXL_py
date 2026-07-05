@@ -431,6 +431,83 @@ def _plane_to_output(native: _NativeResult, out: str):
     raise ValueError("out must be 'numpy', 'torch' or 'raw'")
 
 
+def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict[str, Any]]]:
+    holder = ffi.new("jxlpy_decode_all_result *", result)
+    try:
+        if not result.ok:
+            message = (
+                ffi.string(result.error).decode("utf-8", "replace")
+                if result.error != ffi.NULL
+                else "native call failed"
+            )
+            raise RuntimeError(message)
+        color_data = (
+            bytes(ffi.buffer(result.color_data, result.color_size))
+            if result.color_size
+            else b""
+        )
+        meta = {
+            "xsize": int(result.xsize),
+            "ysize": int(result.ysize),
+            "num_channels": int(result.num_channels),
+            "dtype": _NATIVE_TO_DTYPE.get(int(result.dtype)),
+            "bits_per_sample": int(result.bits_per_sample),
+            "exponent_bits_per_sample": int(result.exponent_bits_per_sample),
+            "num_frames": int(result.num_frames),
+            "frame_index": int(result.frame_index),
+            "have_animation": bool(result.have_animation),
+            "layer_have_crop": bool(result.layer_have_crop),
+            "crop_x0": int(result.crop_x0),
+            "crop_y0": int(result.crop_y0),
+            "layer_xsize": int(result.layer_xsize),
+            "layer_ysize": int(result.layer_ysize),
+            "duration": int(result.duration),
+            "num_extra_channels": int(result.num_extra_channels),
+        }
+        extras: list[dict[str, Any]] = []
+        for i in range(int(result.num_extra_channels)):
+            ec = result.extra_channels[i]
+            ec_name = (
+                ffi.string(ec.extra_channel_name).decode("utf-8", "replace")
+                if ec.extra_channel_name != ffi.NULL
+                else ""
+            )
+            ec_data = (
+                bytes(ffi.buffer(ec.data, ec.size)) if ec.size else b""
+            )
+            extras.append({
+                "index": int(ec.extra_channel_index),
+                "type": _NATIVE_EXTRA_TYPE.get(
+                    int(ec.extra_channel_type), "unknown"
+                ),
+                "name": ec_name,
+                "bits_per_sample": int(ec.bits_per_sample),
+                "exponent_bits_per_sample": int(ec.exponent_bits_per_sample),
+                "dtype": _NATIVE_TO_DTYPE.get(int(ec.dtype)),
+                "data": ec_data,
+            })
+        return color_data, meta, extras
+    finally:
+        lib.jxlpy_free_decode_all_result(holder)
+
+
+def _ec_data_to_output(ec_data: bytes, ec_meta: dict[str, Any], out: str):
+    dtype = ec_meta["dtype"]
+    if dtype is None:
+        raise RuntimeError("native decoder returned an unknown dtype for extra channel")
+    arr = np.frombuffer(ec_data, dtype=dtype)
+    arr = arr.reshape(ec_meta.get("ysize", 0), ec_meta.get("xsize", 0))
+    if out == "numpy":
+        return arr.copy()
+    if out == "torch":
+        import torch
+
+        return torch.from_numpy(arr.copy())
+    if out == "raw":
+        return ec_data
+    raise ValueError("out must be 'numpy', 'torch' or 'raw'")
+
+
 def decode_extra_channel(
     src: Any,
     index: int,
@@ -467,7 +544,48 @@ def decode(
     """Decode JXL, PNG or JPEG bytes/path to numpy, torch or raw bytes."""
     data = _read_bytes(src)
     c_data = ffi.from_buffer(data)
-    if _is_jxl(data):
+    is_jxl = _is_jxl(data)
+
+    if return_extra_channels and is_jxl:
+        all_result = lib.jxlpy_decode_all_jxl(
+            c_data, len(data), int(frame), 1 if coalesced else 0, 0, 0
+        )
+        color_data, meta, extras = _consume_decode_all_result(all_result)
+
+        if out == "raw":
+            value: Any = color_data
+        else:
+            dtype = meta["dtype"]
+            if dtype is None:
+                raise RuntimeError("native decoder returned an unknown dtype")
+            arr = np.frombuffer(color_data, dtype=dtype)
+            arr = arr.reshape(meta["ysize"], meta["xsize"], meta["num_channels"])
+            if out == "numpy":
+                value = arr.copy()
+            elif out == "torch":
+                import torch
+
+                value = torch.from_numpy(arr.copy())
+            else:
+                raise ValueError("out must be 'numpy', 'torch' or 'raw'")
+
+        ec_list: list[dict[str, Any]] = []
+        for ec in extras:
+            if not include_alpha_extra and ec["type"] == "alpha":
+                continue
+            ec_out = _ec_data_to_output(ec["data"], {**ec, **meta}, out if out in ("numpy", "torch") else "raw")
+            ec_list.append({
+                "index": ec["index"],
+                "name": ec["name"],
+                "type": ec["type"],
+                "bits_per_sample": ec["bits_per_sample"],
+                "dtype": ec["dtype"],
+                "data": ec_out,
+            })
+        meta["extra_channels"] = ec_list
+        return (value, meta) if (return_info or return_extra_channels) else value
+
+    if is_jxl:
         result = lib.jxlpy_decode_jxl(
             c_data, len(data), int(frame), 1 if coalesced else 0, 0, 0
         )
@@ -476,7 +594,7 @@ def decode(
     native = _consume_result(result)
 
     if out == "raw":
-        value: Any = native.data
+        value = native.data
     else:
         arr = _decode_to_array(native)
         if out == "numpy":
@@ -487,33 +605,6 @@ def decode(
             value = torch.from_numpy(arr.copy())
         else:
             raise ValueError("out must be 'numpy', 'torch' or 'raw'")
-    if return_extra_channels:
-        native.meta["extra_channels"] = []
-        if _is_jxl(data):
-            for index in range(native.meta["num_extra_channels"]):
-                plane, extra_meta = decode_extra_channel(
-                    data,
-                    index,
-                    frame=frame,
-                    out=out if out in ("numpy", "torch") else "raw",
-                    coalesced=coalesced,
-                    return_info=True,
-                )
-                if (
-                    not include_alpha_extra
-                    and extra_meta["extra_channel_type"] == "alpha"
-                ):
-                    continue
-                native.meta["extra_channels"].append(
-                    {
-                        "index": index,
-                        "name": extra_meta["extra_channel_name"],
-                        "type": extra_meta["extra_channel_type"],
-                        "bits_per_sample": extra_meta["bits_per_sample"],
-                        "dtype": extra_meta["dtype"],
-                        "data": plane,
-                    }
-                )
 
     return (value, native.meta) if (return_info or return_extra_channels) else value
 

@@ -833,6 +833,305 @@ jxlpy_result jxlpy_decode_extra_channel_jxl(
   return result;
 }
 
+jxlpy_decode_all_result jxlpy_decode_all_jxl(
+    const uint8_t* bytes, size_t size, int frame_index, int coalesced,
+    uint32_t requested_channels, uint32_t requested_dtype) {
+  jxlpy_decode_all_result all_result = {};
+  if (bytes == nullptr || size == 0) {
+    all_result.error = DupString("input bytes are empty");
+    return all_result;
+  }
+  if (!IsJxlBytes(bytes, size)) {
+    all_result.error = DupString("input is not JPEG XL");
+    return all_result;
+  }
+
+  JxlDecoder* dec = JxlDecoderCreate(nullptr);
+  if (dec == nullptr) {
+    all_result.error = DupString("failed to create JPEG XL decoder");
+    return all_result;
+  }
+  std::unique_ptr<JxlDecoder, decltype(&JxlDecoderDestroy)> dec_ptr(
+      dec, JxlDecoderDestroy);
+  void* runner = JxlThreadParallelRunnerCreate(
+      nullptr, JxlThreadParallelRunnerDefaultNumWorkerThreads());
+  RunnerPtr runner_ptr(runner, JxlThreadParallelRunnerDestroy);
+  if (runner == nullptr) {
+    all_result.error = DupString("failed to create JPEG XL runner");
+    return all_result;
+  }
+  if (JxlDecoderSetParallelRunner(dec, JxlThreadParallelRunner, runner) !=
+      JXL_DEC_SUCCESS) {
+    all_result.error = DupString("failed to set JPEG XL runner");
+    return all_result;
+  }
+  if (JxlDecoderSetCoalescing(dec, coalesced ? JXL_TRUE : JXL_FALSE) !=
+      JXL_DEC_SUCCESS) {
+    all_result.error = DupString("failed to set JPEG XL coalescing mode");
+    return all_result;
+  }
+  if (JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_FRAME |
+                                         JXL_DEC_FULL_IMAGE) !=
+      JXL_DEC_SUCCESS) {
+    all_result.error = DupString("failed to subscribe decoder events");
+    return all_result;
+  }
+  JxlDecoderSetInput(dec, bytes, size);
+  JxlDecoderCloseInput(dec);
+
+  const uint32_t target_frame =
+      frame_index < 0 ? 0u : static_cast<uint32_t>(frame_index);
+  bool have_info = false;
+  bool have_current_header = false;
+  bool got_target = false;
+  JxlBasicInfo info = {};
+  JxlFrameHeader current_header = {};
+  uint32_t current_frame = 0;
+  uint32_t total_frames = 0;
+  uint32_t output_channels = 0;
+  uint32_t output_dtype = 0;
+  JxlPixelFormat format = {};
+  std::vector<uint8_t> color_buffer;
+  std::vector<uint8_t> final_color_buffer;
+
+  struct ExtraChannelState {
+    uint32_t index;
+    JxlExtraChannelInfo ec_info;
+    std::string name;
+    uint32_t dtype;
+    JxlPixelFormat format;
+    std::vector<uint8_t> buffer;
+    std::vector<uint8_t> final_buffer;
+  };
+  std::vector<ExtraChannelState> extra_states;
+
+  for (;;) {
+    JxlDecoderStatus status = JxlDecoderProcessInput(dec);
+    if (status == JXL_DEC_ERROR) {
+      all_result.error = DupString("failed to decode JPEG XL bytes");
+      return all_result;
+    }
+    if (status == JXL_DEC_SUCCESS) {
+      break;
+    }
+    if (status == JXL_DEC_NEED_MORE_INPUT) {
+      all_result.error = DupString("truncated JPEG XL input");
+      return all_result;
+    }
+    if (status == JXL_DEC_BASIC_INFO) {
+      if (JxlDecoderGetBasicInfo(dec, &info) != JXL_DEC_SUCCESS) {
+        all_result.error = DupString("failed to get JPEG XL basic info");
+        return all_result;
+      }
+      output_channels =
+          (requested_channels >= 1 && requested_channels <= 4)
+              ? requested_channels
+              : info.num_color_channels + (info.alpha_bits ? 1u : 0u);
+      output_dtype = DataTypeBytes(requested_dtype) != 0
+                         ? requested_dtype
+                         : DefaultDecodeDtype(info);
+      format = PixelFormat(output_channels, output_dtype);
+
+      extra_states.resize(info.num_extra_channels);
+      for (uint32_t i = 0; i < info.num_extra_channels; ++i) {
+        ExtraChannelState& ecs = extra_states[i];
+        ecs.index = i;
+        if (JxlDecoderGetExtraChannelInfo(dec, i, &ecs.ec_info) !=
+            JXL_DEC_SUCCESS) {
+          all_result.error = DupString("failed to get extra channel info");
+          return all_result;
+        }
+        if (ecs.ec_info.name_length > 0) {
+          std::vector<char> name_buf(ecs.ec_info.name_length + 1, '\0');
+          if (JxlDecoderGetExtraChannelName(dec, i, name_buf.data(),
+                                            name_buf.size()) !=
+              JXL_DEC_SUCCESS) {
+            all_result.error = DupString("failed to get extra channel name");
+            return all_result;
+          }
+          ecs.name.assign(name_buf.data(), ecs.ec_info.name_length);
+        }
+        if (DataTypeBytes(requested_dtype) != 0) {
+          ecs.dtype = requested_dtype;
+        } else if (ecs.ec_info.exponent_bits_per_sample != 0 ||
+                   ecs.ec_info.bits_per_sample > 16) {
+          ecs.dtype = JXLPY_DTYPE_FLOAT32;
+        } else {
+          ecs.dtype = ecs.ec_info.bits_per_sample > 8
+                          ? JXLPY_DTYPE_UINT16
+                          : JXLPY_DTYPE_UINT8;
+        }
+        ecs.format = PixelFormat(1, ecs.dtype);
+      }
+      have_info = true;
+      continue;
+    }
+    if (status == JXL_DEC_FRAME) {
+      if (!have_info) {
+        all_result.error = DupString("frame seen before basic info");
+        return all_result;
+      }
+      if (JxlDecoderGetFrameHeader(dec, &current_header) != JXL_DEC_SUCCESS) {
+        all_result.error = DupString("failed to get JPEG XL frame header");
+        return all_result;
+      }
+      have_current_header = true;
+      continue;
+    }
+    if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
+      if (!have_info || !have_current_header) {
+        all_result.error =
+            DupString("image buffer requested before frame header");
+        return all_result;
+      }
+      size_t out_size = 0;
+      if (JxlDecoderImageOutBufferSize(dec, &format, &out_size) !=
+          JXL_DEC_SUCCESS) {
+        all_result.error =
+            DupString("failed to get JPEG XL output buffer size");
+        return all_result;
+      }
+      color_buffer.assign(out_size, 0);
+      if (JxlDecoderSetImageOutBuffer(dec, &format, color_buffer.data(),
+                                      color_buffer.size()) !=
+          JXL_DEC_SUCCESS) {
+        all_result.error =
+            DupString("failed to set JPEG XL output buffer");
+        return all_result;
+      }
+      if (output_dtype == JXLPY_DTYPE_UINT8 ||
+          output_dtype == JXLPY_DTYPE_UINT16) {
+        JxlBitDepth bit_depth = {JXL_BIT_DEPTH_FROM_CODESTREAM, 0, 0};
+        JxlDecoderSetImageOutBitDepth(dec, &bit_depth);
+      }
+
+      for (auto& ecs : extra_states) {
+        size_t ec_size = 0;
+        if (JxlDecoderExtraChannelBufferSize(dec, &ecs.format, &ec_size,
+                                             ecs.index) != JXL_DEC_SUCCESS) {
+          all_result.error =
+              DupString("failed to get extra channel buffer size");
+          return all_result;
+        }
+        ecs.buffer.assign(ec_size, 0);
+        if (JxlDecoderSetExtraChannelBuffer(dec, &ecs.format,
+                                            ecs.buffer.data(),
+                                            ecs.buffer.size(),
+                                            ecs.index) != JXL_DEC_SUCCESS) {
+          all_result.error =
+              DupString("failed to set extra channel output buffer");
+          return all_result;
+        }
+      }
+      continue;
+    }
+    if (status == JXL_DEC_FULL_IMAGE) {
+      if (current_frame == target_frame) {
+        final_color_buffer = color_buffer;
+        for (auto& ecs : extra_states) {
+          ecs.final_buffer = ecs.buffer;
+        }
+        all_result.ok = 1;
+        all_result.xsize =
+            coalesced ? info.xsize : current_header.layer_info.xsize;
+        all_result.ysize =
+            coalesced ? info.ysize : current_header.layer_info.ysize;
+        all_result.num_channels = output_channels;
+        all_result.dtype = output_dtype;
+        all_result.bits_per_sample = info.bits_per_sample;
+        all_result.exponent_bits_per_sample = info.exponent_bits_per_sample;
+        all_result.frame_index = current_frame;
+        all_result.have_animation = info.have_animation;
+        all_result.num_extra_channels = info.num_extra_channels;
+        all_result.layer_have_crop =
+            coalesced ? 0 : current_header.layer_info.have_crop;
+        all_result.crop_x0 =
+            coalesced ? 0 : current_header.layer_info.crop_x0;
+        all_result.crop_y0 =
+            coalesced ? 0 : current_header.layer_info.crop_y0;
+        all_result.layer_xsize = current_header.layer_info.xsize;
+        all_result.layer_ysize = current_header.layer_info.ysize;
+        all_result.duration = current_header.duration;
+        got_target = true;
+      }
+      ++current_frame;
+      total_frames = current_frame;
+      color_buffer.clear();
+      for (auto& ecs : extra_states) {
+        ecs.buffer.clear();
+      }
+      have_current_header = false;
+      continue;
+    }
+  }
+
+  if (!got_target) {
+    all_result.error = DupString("frame index out of range");
+    return all_result;
+  }
+
+  all_result.color_size = final_color_buffer.size();
+  if (!final_color_buffer.empty()) {
+    all_result.color_data =
+        static_cast<uint8_t*>(std::malloc(final_color_buffer.size()));
+    if (all_result.color_data == nullptr) {
+      all_result.error = DupString("out of memory");
+      return all_result;
+    }
+    std::memcpy(all_result.color_data, final_color_buffer.data(),
+                final_color_buffer.size());
+  }
+
+  if (!extra_states.empty()) {
+    all_result.extra_channels = static_cast<jxlpy_extra_channel_result*>(
+        std::calloc(extra_states.size(), sizeof(jxlpy_extra_channel_result)));
+    if (all_result.extra_channels == nullptr) {
+      all_result.error = DupString("out of memory");
+      return all_result;
+    }
+    for (size_t i = 0; i < extra_states.size(); ++i) {
+      auto& ecs = extra_states[i];
+      auto& out = all_result.extra_channels[i];
+      out.extra_channel_index = ecs.index;
+      out.extra_channel_type = static_cast<uint32_t>(ecs.ec_info.type);
+      out.bits_per_sample = ecs.ec_info.bits_per_sample;
+      out.exponent_bits_per_sample = ecs.ec_info.exponent_bits_per_sample;
+      out.dtype = ecs.dtype;
+      if (!ecs.name.empty()) {
+        out.extra_channel_name = DupString(ecs.name);
+      }
+      out.size = ecs.final_buffer.size();
+      if (!ecs.final_buffer.empty()) {
+        out.data = static_cast<uint8_t*>(
+            std::malloc(ecs.final_buffer.size()));
+        if (out.data == nullptr) {
+          all_result.error = DupString("out of memory");
+          return all_result;
+        }
+        std::memcpy(out.data, ecs.final_buffer.data(),
+                    ecs.final_buffer.size());
+      }
+    }
+  }
+
+  all_result.num_frames = total_frames;
+  return all_result;
+}
+
+void jxlpy_free_decode_all_result(jxlpy_decode_all_result* result) {
+  if (result == nullptr) return;
+  std::free(result->error);
+  std::free(result->color_data);
+  if (result->extra_channels != nullptr) {
+    for (uint32_t i = 0; i < result->num_extra_channels; ++i) {
+      std::free(result->extra_channels[i].extra_channel_name);
+      std::free(result->extra_channels[i].data);
+    }
+    std::free(result->extra_channels);
+  }
+  std::memset(result, 0, sizeof(*result));
+}
+
 jxlpy_result jxlpy_decode_image_bytes(const uint8_t* bytes, size_t size,
                                       int frame_index) {
   if (bytes == nullptr || size == 0) return ErrorResult("input bytes are empty");
