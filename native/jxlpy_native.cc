@@ -902,6 +902,79 @@ jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size) {
   return result;
 }
 
+jxlpy_result jxlpy_reconstruct_jpeg(const uint8_t* bytes, size_t size) {
+  if (bytes == nullptr || size == 0) return ErrorResult("input bytes are empty");
+  if (!IsJxlBytes(bytes, size)) return ErrorResult("input is not JPEG XL");
+
+  JxlDecoder* dec = JxlDecoderCreate(nullptr);
+  if (dec == nullptr) return ErrorResult("failed to create JPEG XL decoder");
+  std::unique_ptr<JxlDecoder, decltype(&JxlDecoderDestroy)> dec_ptr(
+      dec, JxlDecoderDestroy);
+  void* runner = JxlThreadParallelRunnerCreate(
+      nullptr, JxlThreadParallelRunnerDefaultNumWorkerThreads());
+  RunnerPtr runner_ptr(runner, JxlThreadParallelRunnerDestroy);
+  if (runner == nullptr) return ErrorResult("failed to create JPEG XL runner");
+  if (JxlDecoderSetParallelRunner(dec, JxlThreadParallelRunner, runner) !=
+      JXL_DEC_SUCCESS) {
+    return ErrorResult("failed to set JPEG XL runner");
+  }
+  if (JxlDecoderSubscribeEvents(
+          dec, JXL_DEC_JPEG_RECONSTRUCTION | JXL_DEC_FULL_IMAGE) !=
+      JXL_DEC_SUCCESS) {
+    return ErrorResult("failed to subscribe decoder events");
+  }
+  JxlDecoderSetInput(dec, bytes, size);
+  JxlDecoderCloseInput(dec);
+
+  std::vector<uint8_t> jpeg_out;
+  const size_t kChunkSize = 1u << 20;  // 1 MiB chunks
+  bool reconstruction_available = false;
+
+  for (;;) {
+    JxlDecoderStatus status = JxlDecoderProcessInput(dec);
+    if (status == JXL_DEC_ERROR) {
+      return ErrorResult("failed to decode JPEG XL for JPEG reconstruction");
+    }
+    if (status == JXL_DEC_SUCCESS) {
+      break;
+    }
+    if (status == JXL_DEC_NEED_MORE_INPUT) {
+      return ErrorResult("truncated JPEG XL input");
+    }
+    if (status == JXL_DEC_JPEG_RECONSTRUCTION) {
+      reconstruction_available = true;
+      jpeg_out.resize(kChunkSize);
+      if (JxlDecoderSetJPEGBuffer(dec, jpeg_out.data(), jpeg_out.size()) !=
+          JXL_DEC_SUCCESS) {
+        return ErrorResult("failed to set JPEG reconstruction buffer");
+      }
+      continue;
+    }
+    if (status == JXL_DEC_JPEG_NEED_MORE_OUTPUT) {
+      size_t remaining = JxlDecoderReleaseJPEGBuffer(dec);
+      size_t written = jpeg_out.size() - remaining;
+      jpeg_out.resize(jpeg_out.size() + kChunkSize);
+      if (JxlDecoderSetJPEGBuffer(dec, jpeg_out.data() + written,
+                                   jpeg_out.size() - written) !=
+          JXL_DEC_SUCCESS) {
+        return ErrorResult("failed to set JPEG reconstruction buffer");
+      }
+      continue;
+    }
+    if (status == JXL_DEC_FULL_IMAGE) {
+      break;
+    }
+  }
+
+  if (!reconstruction_available) {
+    return ErrorResult("JXL file does not contain JPEG reconstruction data");
+  }
+
+  size_t remaining = JxlDecoderReleaseJPEGBuffer(dec);
+  jpeg_out.resize(jpeg_out.size() - remaining);
+  return BytesResult(jpeg_out);
+}
+
 jxlpy_result jxlpy_decode_to_format(const uint8_t* bytes, size_t size,
                                     const char* extension, int quality) {
   if (bytes == nullptr || size == 0) return ErrorResult("input bytes are empty");

@@ -1,4 +1,5 @@
 from .api import (
+    analyze_multiframe,
     convert,
     decode,
     decode_extra_channel,
@@ -8,9 +9,11 @@ from .api import (
     encode,
     encode_multiframe,
     info,
+    reconstruct_jpeg,
 )
 
 __all__ = [
+    "analyze_multiframe",
     "convert",
     "decode",
     "decode_extra_channel",
@@ -20,4 +23,5 @@ __all__ = [
     "encode",
     "encode_multiframe",
     "info",
+    "reconstruct_jpeg",
 ]

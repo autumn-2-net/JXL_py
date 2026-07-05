@@ -128,6 +128,9 @@ JXLPY_EXPORT jxlpy_result jxlpy_decode_image_bytes(
 
 JXLPY_EXPORT jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size);
 
+JXLPY_EXPORT jxlpy_result jxlpy_reconstruct_jpeg(
+    const uint8_t* bytes, size_t size);
+
 JXLPY_EXPORT jxlpy_result jxlpy_decode_to_format(
     const uint8_t* bytes, size_t size, const char* extension, int quality);
 

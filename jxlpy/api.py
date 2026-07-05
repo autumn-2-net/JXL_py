@@ -779,8 +779,99 @@ def decode_to_png(src: Any, output: str | Path | None = None) -> bytes | Path:
     return convert(src, output, format="png")
 
 
+def reconstruct_jpeg(src: Any, output: str | Path | None = None) -> bytes | Path:
+    """Extract the original JPEG bitstream from a JXL file (lossless transcode).
+
+    Raises RuntimeError if the JXL does not contain JPEG reconstruction data.
+    """
+    data = _read_bytes(src)
+    c_data = ffi.from_buffer(data)
+    result = lib.jxlpy_reconstruct_jpeg(c_data, len(data))
+    return _write_or_return(_consume_result(result).data, output)
+
+
 def decode_to_jpeg(
     src: Any, output: str | Path | None = None, *, quality: int = 95
 ) -> bytes | Path:
-    """Decode JXL/PNG/JPEG to JPEG bytes or write to file."""
-    return convert(src, output, format="jpg", quality=quality)
+    """Decode to JPEG. Tries JPEG reconstruction first (bit-exact); falls back to re-encode."""
+    data = _read_bytes(src)
+    if _is_jxl(data):
+        try:
+            return _write_or_return(
+                _consume_result(
+                    lib.jxlpy_reconstruct_jpeg(ffi.from_buffer(data), len(data))
+                ).data,
+                output,
+            )
+        except RuntimeError:
+            pass
+    return convert(data, output, format="jpg", quality=quality)
+
+
+def analyze_multiframe(
+    frames: Iterable[Any],
+    *,
+    layout: str = "auto",
+) -> dict[str, Any]:
+    """Analyze a frame sequence and report whether multiframe encoding is beneficial.
+
+    Returns a dict with per-frame diff stats and a recommendation.
+    """
+    arrays = _frame_arrays(frames, layout=layout)
+    h, w, channels = arrays[0].shape
+    full_area = w * h
+    frame_stats = []
+
+    for i, arr in enumerate(arrays):
+        if i == 0:
+            frame_stats.append({
+                "index": 0,
+                "changed_pixels": full_area,
+                "changed_pct": 100.0,
+                "bbox_area": full_area,
+                "bbox_pct": 100.0,
+            })
+            continue
+        changed = np.any(arr != arrays[i - 1], axis=2)
+        changed_count = int(np.sum(changed))
+        if changed_count == 0:
+            frame_stats.append({
+                "index": i,
+                "changed_pixels": 0,
+                "changed_pct": 0.0,
+                "bbox_area": 0,
+                "bbox_pct": 0.0,
+            })
+        else:
+            ys, xs = np.nonzero(changed)
+            bbox_w = int(xs.max()) - int(xs.min()) + 1
+            bbox_h = int(ys.max()) - int(ys.min()) + 1
+            bbox_area = bbox_w * bbox_h
+            frame_stats.append({
+                "index": i,
+                "changed_pixels": changed_count,
+                "changed_pct": changed_count / full_area * 100.0,
+                "bbox_area": bbox_area,
+                "bbox_pct": bbox_area / full_area * 100.0,
+            })
+
+    avg_bbox_pct = np.mean([s["bbox_pct"] for s in frame_stats[1:]]) if len(frame_stats) > 1 else 100.0
+    avg_changed_pct = np.mean([s["changed_pct"] for s in frame_stats[1:]]) if len(frame_stats) > 1 else 100.0
+
+    if avg_bbox_pct < 30:
+        recommendation = "highly_beneficial"
+    elif avg_bbox_pct < 70:
+        recommendation = "moderately_beneficial"
+    else:
+        recommendation = "minimal_benefit"
+
+    return {
+        "num_frames": len(arrays),
+        "canvas_size": (w, h),
+        "channels": channels,
+        "dtype": arrays[0].dtype,
+        "avg_bbox_pct": float(avg_bbox_pct),
+        "avg_changed_pct": float(avg_changed_pct),
+        "recommendation": recommendation,
+        "frames": frame_stats,
+    }

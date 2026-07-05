@@ -124,6 +124,8 @@ ffi.cdef(
 
     jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size);
 
+    jxlpy_result jxlpy_reconstruct_jpeg(const uint8_t* bytes, size_t size);
+
     jxlpy_result jxlpy_decode_to_format(
         const uint8_t* bytes, size_t size, const char* extension, int quality);
     """
