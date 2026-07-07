@@ -149,6 +149,18 @@ def _extra_type_id(value: Any) -> int:
     return int(value)
 
 
+def _optional_int(value: int | None) -> int:
+    return -1 if value is None else int(value)
+
+
+def _optional_float(value: float | None) -> float:
+    return -1.0 if value is None else float(value)
+
+
+def _optional_bool(value: bool | None) -> int:
+    return -1 if value is None else (1 if value else 0)
+
+
 def _parse_extra_spec(spec: Any) -> tuple[str, int, int, Any]:
     name = ""
     type_id = _EXTRA_TYPE_TO_NATIVE["unknown"]
@@ -270,12 +282,62 @@ def _options(
     threads: int = 0,
     use_container: bool = False,
     jpeg_store_metadata: bool = True,
+    lossless_jpeg: bool = True,
+    allow_expert_options: bool = False,
+    compress_boxes: bool = True,
+    brotli_effort: int | None = None,
+    keep_invisible: bool | None = None,
+    patches: bool | None = None,
+    dots: bool | None = None,
+    noise: bool | None = None,
+    gaborish: bool | None = None,
+    group_order: int | None = None,
+    center_x: int | None = None,
+    center_y: int | None = None,
+    progressive: bool = False,
+    progressive_ac: bool | None = None,
+    qprogressive_ac: bool | None = None,
+    progressive_dc: int | None = None,
+    responsive: bool | None = None,
+    epf: int | None = None,
+    faster_decoding: int | None = None,
+    resampling: int | None = None,
+    ec_resampling: int | None = None,
+    already_downsampled: bool | None = None,
+    upsampling_mode: int | None = None,
+    photon_noise_iso: float = 0.0,
+    intensity_target: float = 0.0,
+    premultiply: int | None = None,
+    override_bitdepth: int = 0,
+    buffering: int | None = None,
+    jpeg_reconstruction_cfl: bool | None = None,
+    disable_perceptual_optimizations: bool = False,
+    modular_group_size: int | None = None,
+    modular_predictor: int | None = None,
+    modular_colorspace: int | None = None,
+    modular_ma_tree_learning_percent: float | None = None,
+    modular_nb_prev_channels: int | None = None,
+    modular_palette_colors: int | None = None,
+    modular_lossy_palette: bool | None = None,
+    modular_channel_colors_global_percent: float | None = None,
+    modular_channel_colors_group_percent: float | None = None,
     tps: tuple[int, int] = (1000, 1),
 ):
     if lossless is None:
-        lossless = distance is None
+        lossless = distance is None or float(distance) == 0.0
     if distance is None:
         distance = 0.0 if lossless else 1.0
+    if progressive:
+        if progressive_ac is None:
+            progressive_ac = True
+        if progressive_dc is None:
+            progressive_dc = 1
+        if group_order is None:
+            group_order = 1
+        if patches is None:
+            patches = False
+        if responsive is None:
+            responsive = True
     opts = ffi.new("jxlpy_encode_options *")
     opts.lossless = 1 if lossless else 0
     opts.distance = float(distance)
@@ -288,6 +350,52 @@ def _options(
     opts.jpeg_store_metadata = 1 if jpeg_store_metadata else 0
     opts.tps_numerator = int(tps[0])
     opts.tps_denominator = int(tps[1])
+    opts.lossless_jpeg = 1 if lossless_jpeg else 0
+    opts.allow_expert_options = 1 if allow_expert_options else 0
+    opts.compress_boxes = 1 if compress_boxes else 0
+    opts.brotli_effort = _optional_int(brotli_effort)
+    opts.keep_invisible = _optional_bool(keep_invisible)
+    opts.patches = _optional_bool(patches)
+    opts.dots = _optional_bool(dots)
+    opts.noise = _optional_bool(noise)
+    opts.gaborish = _optional_bool(gaborish)
+    opts.group_order = _optional_int(group_order)
+    opts.center_x = _optional_int(center_x)
+    opts.center_y = _optional_int(center_y)
+    opts.progressive_ac = _optional_bool(progressive_ac)
+    opts.qprogressive_ac = _optional_bool(qprogressive_ac)
+    opts.progressive_dc = _optional_int(progressive_dc)
+    opts.responsive = _optional_bool(responsive)
+    opts.epf = _optional_int(epf)
+    opts.faster_decoding = _optional_int(faster_decoding)
+    opts.resampling = _optional_int(resampling)
+    opts.ec_resampling = _optional_int(ec_resampling)
+    opts.already_downsampled = _optional_bool(already_downsampled)
+    opts.upsampling_mode = _optional_int(upsampling_mode)
+    opts.photon_noise_iso = float(photon_noise_iso)
+    opts.intensity_target = float(intensity_target)
+    opts.premultiply = _optional_int(premultiply)
+    opts.override_bitdepth = int(override_bitdepth)
+    opts.buffering = _optional_int(buffering)
+    opts.jpeg_reconstruction_cfl = _optional_bool(jpeg_reconstruction_cfl)
+    opts.disable_perceptual_optimizations = (
+        1 if disable_perceptual_optimizations else 0
+    )
+    opts.modular_group_size = _optional_int(modular_group_size)
+    opts.modular_predictor = _optional_int(modular_predictor)
+    opts.modular_colorspace = _optional_int(modular_colorspace)
+    opts.modular_ma_tree_learning_percent = _optional_float(
+        modular_ma_tree_learning_percent
+    )
+    opts.modular_nb_prev_channels = _optional_int(modular_nb_prev_channels)
+    opts.modular_palette_colors = _optional_int(modular_palette_colors)
+    opts.modular_lossy_palette = _optional_bool(modular_lossy_palette)
+    opts.modular_channel_colors_global_percent = _optional_float(
+        modular_channel_colors_global_percent
+    )
+    opts.modular_channel_colors_group_percent = _optional_float(
+        modular_channel_colors_group_percent
+    )
     return opts
 
 
@@ -363,6 +471,45 @@ def encode(
     threads: int = 0,
     use_container: bool = False,
     jpeg_store_metadata: bool = True,
+    lossless_jpeg: bool = True,
+    allow_expert_options: bool = False,
+    compress_boxes: bool = True,
+    brotli_effort: int | None = None,
+    keep_invisible: bool | None = None,
+    patches: bool | None = None,
+    dots: bool | None = None,
+    noise: bool | None = None,
+    gaborish: bool | None = None,
+    group_order: int | None = None,
+    center_x: int | None = None,
+    center_y: int | None = None,
+    progressive: bool = False,
+    progressive_ac: bool | None = None,
+    qprogressive_ac: bool | None = None,
+    progressive_dc: int | None = None,
+    responsive: bool | None = None,
+    epf: int | None = None,
+    faster_decoding: int | None = None,
+    resampling: int | None = None,
+    ec_resampling: int | None = None,
+    already_downsampled: bool | None = None,
+    upsampling_mode: int | None = None,
+    photon_noise_iso: float = 0.0,
+    intensity_target: float = 0.0,
+    premultiply: int | None = None,
+    override_bitdepth: int = 0,
+    buffering: int | None = None,
+    jpeg_reconstruction_cfl: bool | None = None,
+    disable_perceptual_optimizations: bool = False,
+    modular_group_size: int | None = None,
+    modular_predictor: int | None = None,
+    modular_colorspace: int | None = None,
+    modular_ma_tree_learning_percent: float | None = None,
+    modular_nb_prev_channels: int | None = None,
+    modular_palette_colors: int | None = None,
+    modular_lossy_palette: bool | None = None,
+    modular_channel_colors_global_percent: float | None = None,
+    modular_channel_colors_group_percent: float | None = None,
 ):
     """Encode a path, encoded image bytes, numpy array or torch tensor to JXL."""
     opts = _options(
@@ -375,6 +522,45 @@ def encode(
         threads=threads,
         use_container=use_container,
         jpeg_store_metadata=jpeg_store_metadata,
+        lossless_jpeg=lossless_jpeg,
+        allow_expert_options=allow_expert_options,
+        compress_boxes=compress_boxes,
+        brotli_effort=brotli_effort,
+        keep_invisible=keep_invisible,
+        patches=patches,
+        dots=dots,
+        noise=noise,
+        gaborish=gaborish,
+        group_order=group_order,
+        center_x=center_x,
+        center_y=center_y,
+        progressive=progressive,
+        progressive_ac=progressive_ac,
+        qprogressive_ac=qprogressive_ac,
+        progressive_dc=progressive_dc,
+        responsive=responsive,
+        epf=epf,
+        faster_decoding=faster_decoding,
+        resampling=resampling,
+        ec_resampling=ec_resampling,
+        already_downsampled=already_downsampled,
+        upsampling_mode=upsampling_mode,
+        photon_noise_iso=photon_noise_iso,
+        intensity_target=intensity_target,
+        premultiply=premultiply,
+        override_bitdepth=override_bitdepth,
+        buffering=buffering,
+        jpeg_reconstruction_cfl=jpeg_reconstruction_cfl,
+        disable_perceptual_optimizations=disable_perceptual_optimizations,
+        modular_group_size=modular_group_size,
+        modular_predictor=modular_predictor,
+        modular_colorspace=modular_colorspace,
+        modular_ma_tree_learning_percent=modular_ma_tree_learning_percent,
+        modular_nb_prev_channels=modular_nb_prev_channels,
+        modular_palette_colors=modular_palette_colors,
+        modular_lossy_palette=modular_lossy_palette,
+        modular_channel_colors_global_percent=modular_channel_colors_global_percent,
+        modular_channel_colors_group_percent=modular_channel_colors_group_percent,
     )
 
     if isinstance(src, (str, Path, bytes, bytearray, memoryview)):
@@ -680,6 +866,43 @@ def encode_multiframe(
     level: int = -1,
     threads: int = 0,
     use_container: bool = False,
+    allow_expert_options: bool = False,
+    compress_boxes: bool = True,
+    brotli_effort: int | None = None,
+    keep_invisible: bool | None = None,
+    patches: bool | None = None,
+    dots: bool | None = None,
+    noise: bool | None = None,
+    gaborish: bool | None = None,
+    group_order: int | None = None,
+    center_x: int | None = None,
+    center_y: int | None = None,
+    progressive: bool = False,
+    progressive_ac: bool | None = None,
+    qprogressive_ac: bool | None = None,
+    progressive_dc: int | None = None,
+    responsive: bool | None = None,
+    epf: int | None = None,
+    faster_decoding: int | None = None,
+    resampling: int | None = None,
+    ec_resampling: int | None = None,
+    already_downsampled: bool | None = None,
+    upsampling_mode: int | None = None,
+    photon_noise_iso: float = 0.0,
+    intensity_target: float = 0.0,
+    premultiply: int | None = None,
+    override_bitdepth: int = 0,
+    buffering: int | None = None,
+    disable_perceptual_optimizations: bool = False,
+    modular_group_size: int | None = None,
+    modular_predictor: int | None = None,
+    modular_colorspace: int | None = None,
+    modular_ma_tree_learning_percent: float | None = None,
+    modular_nb_prev_channels: int | None = None,
+    modular_palette_colors: int | None = None,
+    modular_lossy_palette: bool | None = None,
+    modular_channel_colors_global_percent: float | None = None,
+    modular_channel_colors_group_percent: float | None = None,
 ):
     """Encode multiple frames, with optional exact REPLACE+crop delta frames."""
     arrays = _frame_arrays(frames, layout=layout)
@@ -704,6 +927,43 @@ def encode_multiframe(
         threads=threads,
         use_container=use_container,
         jpeg_store_metadata=False,
+        allow_expert_options=allow_expert_options,
+        compress_boxes=compress_boxes,
+        brotli_effort=brotli_effort,
+        keep_invisible=keep_invisible,
+        patches=patches,
+        dots=dots,
+        noise=noise,
+        gaborish=gaborish,
+        group_order=group_order,
+        center_x=center_x,
+        center_y=center_y,
+        progressive=progressive,
+        progressive_ac=progressive_ac,
+        qprogressive_ac=qprogressive_ac,
+        progressive_dc=progressive_dc,
+        responsive=responsive,
+        epf=epf,
+        faster_decoding=faster_decoding,
+        resampling=resampling,
+        ec_resampling=ec_resampling,
+        already_downsampled=already_downsampled,
+        upsampling_mode=upsampling_mode,
+        photon_noise_iso=photon_noise_iso,
+        intensity_target=intensity_target,
+        premultiply=premultiply,
+        override_bitdepth=override_bitdepth,
+        buffering=buffering,
+        disable_perceptual_optimizations=disable_perceptual_optimizations,
+        modular_group_size=modular_group_size,
+        modular_predictor=modular_predictor,
+        modular_colorspace=modular_colorspace,
+        modular_ma_tree_learning_percent=modular_ma_tree_learning_percent,
+        modular_nb_prev_channels=modular_nb_prev_channels,
+        modular_palette_colors=modular_palette_colors,
+        modular_lossy_palette=modular_lossy_palette,
+        modular_channel_colors_global_percent=modular_channel_colors_global_percent,
+        modular_channel_colors_group_percent=modular_channel_colors_group_percent,
         tps=tps,
     )
 

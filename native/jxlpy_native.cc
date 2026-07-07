@@ -151,6 +151,44 @@ jxlpy_encode_options NormalizeOptions(const jxlpy_encode_options* options) {
   out.jpeg_store_metadata = 1;
   out.tps_numerator = 1000;
   out.tps_denominator = 1;
+  out.lossless_jpeg = 1;
+  out.allow_expert_options = 0;
+  out.compress_boxes = 1;
+  out.brotli_effort = -1;
+  out.keep_invisible = -1;
+  out.patches = -1;
+  out.dots = -1;
+  out.noise = -1;
+  out.gaborish = -1;
+  out.group_order = -1;
+  out.center_x = -1;
+  out.center_y = -1;
+  out.progressive_ac = -1;
+  out.qprogressive_ac = -1;
+  out.progressive_dc = -1;
+  out.responsive = -1;
+  out.epf = -1;
+  out.faster_decoding = -1;
+  out.resampling = -1;
+  out.ec_resampling = -1;
+  out.already_downsampled = -1;
+  out.upsampling_mode = -1;
+  out.photon_noise_iso = 0.0f;
+  out.intensity_target = 0.0f;
+  out.premultiply = -1;
+  out.override_bitdepth = 0;
+  out.buffering = -1;
+  out.jpeg_reconstruction_cfl = -1;
+  out.disable_perceptual_optimizations = 0;
+  out.modular_group_size = -1;
+  out.modular_predictor = -1;
+  out.modular_colorspace = -1;
+  out.modular_ma_tree_learning_percent = -1.0f;
+  out.modular_nb_prev_channels = -1;
+  out.modular_palette_colors = -1;
+  out.modular_lossy_palette = -1;
+  out.modular_channel_colors_global_percent = -1.0f;
+  out.modular_channel_colors_group_percent = -1.0f;
   if (options != nullptr) out = *options;
   if (out.tps_numerator == 0) out.tps_numerator = 1000;
   if (out.tps_denominator == 0) out.tps_denominator = 1;
@@ -168,22 +206,114 @@ RunnerPtr MakeRunner(const jxlpy_encode_options& options) {
                    JxlThreadParallelRunnerDestroy);
 }
 
+void AddIntOptionIfSet(jxl::extras::JXLCompressParams* params,
+                       JxlEncoderFrameSettingId id, int value) {
+  if (value >= 0) {
+    params->AddOption(id, value);
+  }
+}
+
+void AddFloatOptionIfSet(jxl::extras::JXLCompressParams* params,
+                         JxlEncoderFrameSettingId id, float value) {
+  if (value >= 0.0f) {
+    params->AddFloatOption(id, value);
+  }
+}
+
 jxl::extras::JXLCompressParams MakeCompressParams(
     const jxlpy_encode_options& options, void* runner) {
   jxl::extras::JXLCompressParams params;
-  params.distance = options.lossless ? 0.0f
-                                     : (options.distance > 0.0f ? options.distance
-                                                               : 1.0f);
+  const bool pixel_lossless = options.lossless != 0 || options.distance == 0.0f;
+  params.distance = pixel_lossless
+                        ? 0.0f
+                        : (options.distance > 0.0f ? options.distance : 1.0f);
   params.alpha_distance = options.alpha_distance;
   params.codestream_level = options.level;
   params.use_container = options.use_container != 0;
   params.jpeg_store_metadata = options.jpeg_store_metadata != 0;
+  params.compress_boxes = options.compress_boxes != 0;
+  params.intensity_target = options.intensity_target;
+  params.override_bitdepth = options.override_bitdepth > 0
+                                 ? static_cast<size_t>(options.override_bitdepth)
+                                 : 0;
+  params.premultiply = options.premultiply;
+  params.upsampling_mode = options.upsampling_mode;
+  params.allow_expert_options = options.allow_expert_options != 0;
   params.runner_opaque = runner;
   if (options.effort >= 0) {
     params.AddOption(JXL_ENC_FRAME_SETTING_EFFORT, options.effort);
   }
   if (options.modular >= 0) {
     params.AddOption(JXL_ENC_FRAME_SETTING_MODULAR, options.modular);
+  }
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_KEEP_INVISIBLE,
+                    options.keep_invisible);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_PATCHES, options.patches);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_DOTS, options.dots);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_NOISE, options.noise);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_GABORISH, options.gaborish);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_GROUP_ORDER,
+                    options.group_order);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_GROUP_ORDER_CENTER_X,
+                    options.center_x);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_GROUP_ORDER_CENTER_Y,
+                    options.center_y);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_PROGRESSIVE_AC,
+                    options.progressive_ac);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_QPROGRESSIVE_AC,
+                    options.qprogressive_ac);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_PROGRESSIVE_DC,
+                    options.progressive_dc);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_RESPONSIVE,
+                    options.responsive);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_EPF, options.epf);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_DECODING_SPEED,
+                    options.faster_decoding);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_RESAMPLING,
+                    options.resampling);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_EXTRA_CHANNEL_RESAMPLING,
+                    options.ec_resampling);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_ALREADY_DOWNSAMPLED,
+                    options.already_downsampled);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_BUFFERING,
+                    options.buffering);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_JPEG_RECON_CFL,
+                    options.jpeg_reconstruction_cfl);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_JPEG_COMPRESS_BOXES,
+                    options.compress_boxes);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_BROTLI_EFFORT,
+                    options.brotli_effort);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_MODULAR_GROUP_SIZE,
+                    options.modular_group_size);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_MODULAR_PREDICTOR,
+                    options.modular_predictor);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_MODULAR_COLOR_SPACE,
+                    options.modular_colorspace);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_MODULAR_NB_PREV_CHANNELS,
+                    options.modular_nb_prev_channels);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_PALETTE_COLORS,
+                    options.modular_palette_colors);
+  AddIntOptionIfSet(&params, JXL_ENC_FRAME_SETTING_LOSSY_PALETTE,
+                    options.modular_lossy_palette);
+  AddFloatOptionIfSet(&params,
+                      JXL_ENC_FRAME_SETTING_MODULAR_MA_TREE_LEARNING_PERCENT,
+                      options.modular_ma_tree_learning_percent);
+  AddFloatOptionIfSet(&params,
+                      JXL_ENC_FRAME_SETTING_CHANNEL_COLORS_GLOBAL_PERCENT,
+                      options.modular_channel_colors_global_percent);
+  AddFloatOptionIfSet(&params,
+                      JXL_ENC_FRAME_SETTING_CHANNEL_COLORS_GROUP_PERCENT,
+                      options.modular_channel_colors_group_percent);
+  if (options.photon_noise_iso > 0.0f) {
+    params.AddFloatOption(JXL_ENC_FRAME_SETTING_PHOTON_NOISE,
+                          options.photon_noise_iso);
+  }
+  if (options.already_downsampled > 0) {
+    params.already_downsampled =
+        options.resampling > 0 ? options.resampling : 1;
+  }
+  if (options.disable_perceptual_optimizations) {
+    params.AddOption(JXL_ENC_FRAME_SETTING_DISABLE_PERCEPTUAL_HEURISTICS, 1);
   }
   return params;
 }
@@ -433,7 +563,8 @@ jxlpy_result jxlpy_encode_image_bytes(const uint8_t* bytes, size_t size,
   }
   std::vector<uint8_t> jpeg_bytes;
   const std::vector<uint8_t>* jpeg_ptr = nullptr;
-  if (codec == jxl::extras::Codec::kJPG && opts.lossless) {
+  if (codec == jxl::extras::Codec::kJPG && opts.lossless &&
+      opts.lossless_jpeg) {
     jpeg_bytes.assign(bytes, bytes + size);
     jpeg_ptr = &jpeg_bytes;
   }
