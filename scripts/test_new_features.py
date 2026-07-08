@@ -59,7 +59,51 @@ def test_analyze():
         print()
 
 
+def test_analyze_auto_alignment():
+    print("=== Analyze Auto Alignment ===")
+
+    frames = [np.zeros((16, 16, 3), dtype=np.uint8) for _ in range(4)]
+    frames[1] = frames[0].copy()
+    frames[1][2:4, 2:4, 0] = 80
+    frames[2] = frames[1].copy()
+    frames[2][5:7, 5:7, 1] = 120
+    frames[3] = frames[0].copy()
+    frames[3][12:14, 12:14, 2] = 200
+
+    masks = [np.zeros((16, 16), dtype=np.uint8) for _ in range(4)]
+    masks[2][8:10, 8:10] = 255
+
+    extras = [("mask", "selection_mask", masks)]
+    report = jxlpy.analyze_multiframe(frames, extra_channels=extras, reference="auto")
+    jxl = jxlpy.encode_multiframe(
+        frames,
+        extra_channels=extras,
+        reference="auto",
+        effort=1,
+    )
+
+    expected_sources = ["none", "first", "previous", "first"]
+    sources = [frame["source"] for frame in report["frames"]]
+    if sources != expected_sources:
+        raise AssertionError(f"unexpected auto sources: {sources}")
+
+    for stat in report["frames"]:
+        layer, meta = jxlpy.decode_layer(jxl, layer=stat["index"])
+        if bool(meta["layer_have_crop"]) != bool(stat["use_crop"]):
+            raise AssertionError(f"layer {stat['index']} crop mismatch")
+        if stat["use_crop"]:
+            if meta["crop_x0"] != stat["crop_x0"] or meta["crop_y0"] != stat["crop_y0"]:
+                raise AssertionError(f"layer {stat['index']} crop offset mismatch")
+            if layer.shape[1] != stat["crop_xsize"] or layer.shape[0] != stat["crop_ysize"]:
+                raise AssertionError(f"layer {stat['index']} crop size mismatch")
+
+    print("  sources:", ", ".join(sources))
+    print("  RESULT: PASS")
+    print()
+
+
 if __name__ == "__main__":
     test_jpeg_reconstruct()
     test_analyze()
+    test_analyze_auto_alignment()
     print("Done.")
