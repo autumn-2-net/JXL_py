@@ -257,7 +257,7 @@ Supported analysis options:
 
 | Python option | Meaning |
 |---|---|
-| `reference` | Same values as `encode_multiframe`: `auto`, `first`, `previous`, `none`, `full`. |
+| `reference` | Crop/replace analysis modes: `auto`, `first`, `previous`, `none`, `full`. The experimental `blend_mask` and `add` encoder paths are not modeled by the analyzer. |
 | `min_crop_ratio` | Same crop cutoff as encoding. |
 | `extra_channels` | Optional extra channel planes; changes are included in the diff bbox. |
 

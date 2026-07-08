@@ -240,9 +240,10 @@ Then keep the smaller file only if JPEG byte-exact preservation is not needed.
 
 ## Multi-Frame Diff Notes
 
-For exact multi-frame/layer storage, prefer `REPLACE + crop` over `BLEND`.
-Transparent-black tricks can work for opaque images, but they are risky for
-semi-transparent pixels, premultiplied-alpha assumptions, and invisible RGB.
+For the most conservative exact multi-frame/layer storage, prefer
+`REPLACE + crop`. Transparent-black tricks that reuse the image alpha channel
+can work for opaque images, but they are risky for semi-transparent pixels,
+premultiplied-alpha assumptions, and invisible RGB.
 
 Diff crop rules:
 
@@ -258,6 +259,67 @@ Diff crop rules:
 This is separate from libjxl patches. Current libjxl does not aggressively
 optimize inter-frame differences automatically, so the wrapper should own this
 logic when exact multi-frame compression matters.
+
+### Experimental Masked BLEND
+
+`jxlpy.encode_multiframe(..., reference="blend_mask")` tests a more compact
+way to handle scattered changes:
+
+- The first frame is stored normally and saved as reference `1`.
+- Later frames compare against the previous reconstructed frame.
+- Within the selected bbox, changed pixels contain current samples and
+  unchanged pixels are zeroed.
+- An internal `selection_mask` extra channel named `jxlpy_blend_mask` stores
+  1 for changed pixels and 0 for unchanged pixels.
+- The frame header uses `JXL_BLEND_BLEND`, `source=1`, and `alpha` pointing to
+  that internal mask.
+
+This keeps the main payload `uint8`/`uint16`, avoids signed float residuals, and
+lets one bbox contain multiple disconnected changed regions. It is safer than
+using the real RGBA alpha as a mask because actual image alpha remains image
+data; the blend mask is a separate extra channel. The tradeoff is that the file
+contains an extra mask channel, which will be visible if callers request all
+extra channels.
+
+On `test_img/mt_lay/t1` at `-e 3`, the observed sizes were:
+
+```text
+full frames : 156930 bytes
+crop/replace:  62096 bytes
+blend mask  :  58594 bytes
+```
+
+### Experimental ADD Residuals
+
+`jxlpy.encode_multiframe(..., reference="add")` is an experimental path for
+testing `JXL_BLEND_ADD`:
+
+- The first frame is stored as normalized `float32`.
+- Later frames are stored full-size as `current - previous` float residuals.
+- The frame header uses `JXL_BLEND_ADD` with source reference `1`.
+- The wrapper forces modular mode unless the caller explicitly overrides it.
+
+This avoids the single-bbox problem for scattered changes because unchanged
+pixels become zero residuals instead of being included in a large crop. It is
+not the same as the exact `REPLACE + crop` path:
+
+- Negative residuals require float samples; uint8/uint16 buffers cannot express
+  them.
+- Decoded frames are float samples, so byte-exact RGBA restoration must be
+  validated with a roundtrip check.
+- This path can fail on larger real sequences and often compresses poorly
+  because it stores float32 residuals.
+
+Run:
+
+```powershell
+C:\Users\autumn\.conda\envs\py10\python.exe scripts\test_additive_multiframe.py --folder test_img\mt_lay\t1 --effort 3
+```
+
+The script compares full frames, crop/replace, and masked BLEND, prints size and
+encode time, and checks exact reconstruction. Use `--include-add` to also try
+the ADD residual path, `--skip-synthetic` to only run the folder case, and
+`--limit N` to cap frame count.
 
 ## Proposed Encoder Policy
 

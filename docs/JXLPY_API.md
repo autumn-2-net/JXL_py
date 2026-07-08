@@ -105,8 +105,9 @@ image, meta = jxlpy.decode(
 jxlpy.encode_multiframe(frames, output=None, **options)
 ```
 
-The wrapper stores exact delta layers using `JXL_BLEND_REPLACE` plus crop. It
-does not use transparent-black `BLEND` tricks for exact preservation.
+By default the wrapper stores exact delta layers using `JXL_BLEND_REPLACE` plus
+crop. It also has experimental masked BLEND and ADD residual modes for testing
+scattered changes.
 
 Reference modes:
 
@@ -116,6 +117,8 @@ Reference modes:
 | `"previous"` | Compare only against previous reconstructed frame. |
 | `"first"` | Compare only against the first frame. |
 | `"none"` / `"full"` | Store every frame full-size. |
+| `"blend_mask"` / `"mask"` | Experimental: store changed pixels plus an internal binary mask extra channel, then compose with `JXL_BLEND_BLEND` against the previous reference. |
+| `"add"` / `"additive"` | Experimental: store full-frame float32 residuals and compose with `JXL_BLEND_ADD`. |
 
 Example:
 
@@ -128,6 +131,44 @@ jxl = jxlpy.encode_multiframe(
     min_crop_ratio=0.98,
 )
 ```
+
+Experimental masked BLEND mode:
+
+```python
+jxl = jxlpy.encode_multiframe(
+    frames,
+    distance=0,
+    effort=3,
+    reference="blend_mask",
+)
+```
+
+`reference="blend_mask"` keeps integer samples, uses the previous frame as the
+reference, and adds an internal `selection_mask` extra channel named
+`jxlpy_blend_mask`. Within the selected bbox, changed pixels contain current
+samples and mask value 1; unchanged pixels are zeroed and mask value 0. The
+decoder composites with `JXL_BLEND_BLEND`, so unchanged pixels come from the
+previous reference. Main-image decoding remains exact for `uint8`/`uint16`
+inputs, including RGBA, because the mask is separate from the real alpha
+channel. If all extra channels are requested during decode, the internal mask is
+visible as an extra channel.
+
+Experimental ADD residual mode:
+
+```python
+jxl = jxlpy.encode_multiframe(
+    frames,
+    distance=0,
+    effort=3,
+    reference="add",
+)
+```
+
+`reference="add"` converts integer frames to normalized `float32`, stores the
+first frame directly, and stores later frames as `current - previous` with
+`JXL_BLEND_ADD`. This can help scattered changes avoid a huge crop bbox, but it
+is an experiment: decoded frames are float samples, and exact byte-for-byte
+RGBA preservation must be validated for the target data.
 
 Read the reconstructed frame:
 

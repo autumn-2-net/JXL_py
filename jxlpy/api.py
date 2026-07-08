@@ -38,6 +38,14 @@ _EXTRA_TYPE_TO_NATIVE = {
 
 _NATIVE_EXTRA_TYPE = {value: key for key, value in _EXTRA_TYPE_TO_NATIVE.items()}
 
+_BLEND_MODE_TO_NATIVE = {
+    "replace": 0,
+    "add": 1,
+    "blend": 2,
+    "muladd": 3,
+    "mul": 4,
+}
+
 
 @dataclass(frozen=True)
 class _NativeResult:
@@ -169,6 +177,30 @@ def _optional_float(value: float | None) -> float:
 
 def _optional_bool(value: bool | None) -> int:
     return -1 if value is None else (1 if value else 0)
+
+
+def _pack_source_ref(
+    source_ref: int,
+    *,
+    blend_mode: str = "replace",
+    alpha: int = 0,
+    clamp: bool = False,
+) -> int:
+    source = int(source_ref)
+    if not 0 <= source <= 3:
+        raise ValueError("source_ref must be in 0..3")
+    key = blend_mode.lower().replace("-", "").replace("_", "")
+    if key not in _BLEND_MODE_TO_NATIVE:
+        raise ValueError(f"unknown blend mode: {blend_mode!r}")
+    alpha_index = int(alpha)
+    if not 0 <= alpha_index <= 255:
+        raise ValueError("blend alpha index must be in 0..255")
+    return (
+        source
+        | (_BLEND_MODE_TO_NATIVE[key] << 8)
+        | (alpha_index << 16)
+        | ((1 if clamp else 0) << 24)
+    )
 
 
 def _resolve_alias(primary_name: str, primary_value: Any, alias_name: str, alias_value: Any):
@@ -453,11 +485,25 @@ def _diff_stats(
     current_extras: list[np.ndarray],
     reference_extras: list[np.ndarray],
 ) -> _DiffStats:
+    changed = _changed_mask(current, reference, current_extras, reference_extras)
+    return _diff_stats_from_mask(changed)
+
+
+def _changed_mask(
+    current: np.ndarray,
+    reference: np.ndarray,
+    current_extras: list[np.ndarray],
+    reference_extras: list[np.ndarray],
+) -> np.ndarray:
     changed = np.any(current != reference, axis=2)
     for cur_extra, ref_extra in zip(current_extras, reference_extras):
         changed |= cur_extra != ref_extra
+    return changed
+
+
+def _diff_stats_from_mask(changed: np.ndarray) -> _DiffStats:
     changed_count = int(np.count_nonzero(changed))
-    full_area = int(current.shape[0] * current.shape[1])
+    full_area = int(changed.shape[0] * changed.shape[1])
     if changed_count == 0:
         bbox = (0, 0, 1, 1)
     else:
@@ -1139,6 +1185,57 @@ def _durations(value: int | Iterable[int], count: int) -> list[int]:
     return out
 
 
+def _as_float_samples(arr: np.ndarray) -> np.ndarray:
+    if arr.dtype == np.uint8:
+        return arr.astype(np.float32) / np.float32(255.0)
+    if arr.dtype == np.uint16:
+        return arr.astype(np.float32) / np.float32(65535.0)
+    return arr.astype(np.float32, copy=False)
+
+
+def _additive_payloads(arrays: list[np.ndarray]) -> list[np.ndarray]:
+    normalized = [_as_float_samples(arr) for arr in arrays]
+    payloads = [normalized[0]]
+    for i in range(1, len(normalized)):
+        payloads.append(normalized[i] - normalized[i - 1])
+    return [np.ascontiguousarray(payload, dtype=np.float32) for payload in payloads]
+
+
+def _additive_extra_specs(extra_specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for spec in extra_specs:
+        next_spec = dict(spec)
+        next_spec["arrays"] = _additive_payloads(spec["arrays"])
+        next_spec["bits_per_sample"] = 0
+        out.append(next_spec)
+    return out
+
+
+def _integer_mask_value(dtype: np.dtype, bits_per_sample: int) -> int:
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype("uint8"):
+        bits = bits_per_sample if bits_per_sample else 8
+    elif dtype == np.dtype("uint16"):
+        bits = bits_per_sample if bits_per_sample else 16
+    else:
+        raise TypeError("blend_mask reference mode requires uint8 or uint16 frames")
+    if bits <= 0 or bits > dtype.itemsize * 8:
+        raise ValueError("bits_per_sample is incompatible with blend_mask dtype")
+    return (1 << bits) - 1
+
+
+def _masked_payload(arr: np.ndarray, changed: np.ndarray) -> np.ndarray:
+    out = np.zeros_like(arr)
+    out[changed] = arr[changed]
+    return np.ascontiguousarray(out)
+
+
+def _masked_plane_payload(arr: np.ndarray, changed: np.ndarray) -> np.ndarray:
+    out = np.zeros_like(arr)
+    out[changed] = arr[changed]
+    return np.ascontiguousarray(out)
+
+
 def encode_multiframe(
     frames: Iterable[Any],
     output: str | Path | None = None,
@@ -1202,12 +1299,29 @@ def encode_multiframe(
     frame_settings: Any = None,
 ):
     """Encode multiple frames, with optional exact REPLACE+crop delta frames."""
-    if reference not in ("auto", "first", "previous", "none", "full"):
-        raise ValueError("reference must be 'auto', 'first', 'previous', 'none' or 'full'")
+    if reference not in (
+        "auto",
+        "first",
+        "previous",
+        "none",
+        "full",
+        "add",
+        "additive",
+        "blend_mask",
+        "mask",
+        "masked",
+    ):
+        raise ValueError(
+            "reference must be 'auto', 'first', 'previous', 'none', 'full', "
+            "'add' or 'blend_mask'"
+        )
+    additive = reference in ("add", "additive")
+    blend_mask = reference in ("blend_mask", "mask", "masked")
     arrays = _frame_arrays(frames, layout=layout)
     durs = _durations(durations, len(arrays))
     h, w, channels = arrays[0].shape
     dtype_id = _DTYPE_TO_NATIVE[arrays[0].dtype]
+    native_bits_per_sample = int(bits_per_sample)
     full_area = w * h
     extra_specs = _extra_specs_to_frame_arrays(
         extra_channels,
@@ -1215,6 +1329,37 @@ def encode_multiframe(
         expected_hw=(h, w),
         layout=layout,
     )
+    reference_extra_specs = extra_specs
+    if additive:
+        arrays = _additive_payloads(arrays)
+        extra_specs = _additive_extra_specs(extra_specs)
+        dtype_id = lib.JXLPY_DTYPE_FLOAT32
+        native_bits_per_sample = 0
+        if modular is None:
+            modular = 1
+    mask_value = 0
+    mask_alpha_index = 0
+    if blend_mask:
+        if additive:
+            raise ValueError("blend_mask and add reference modes are mutually exclusive")
+        mask_value = _integer_mask_value(arrays[0].dtype, native_bits_per_sample)
+        mask_alpha_index = (1 if channels in (2, 4) else 0) + len(extra_specs)
+        mask_arrays = [
+            np.zeros((h, w), dtype=arrays[0].dtype) for _ in range(len(arrays))
+        ]
+        extra_specs = [
+            *extra_specs,
+            {
+                "name": "jxlpy_blend_mask",
+                "type_id": _EXTRA_TYPE_TO_NATIVE["selection_mask"],
+                "bits_per_sample": native_bits_per_sample
+                if native_bits_per_sample
+                else arrays[0].dtype.itemsize * 8,
+                "arrays": mask_arrays,
+            },
+        ]
+        if modular is None:
+            modular = 1
 
     option_kwargs = dict(
         lossless=lossless,
@@ -1289,7 +1434,17 @@ def encode_multiframe(
     refs: dict[int, tuple[np.ndarray, list[np.ndarray]]] = {}
 
     for i, arr in enumerate(arrays):
-        full_extras = [spec["arrays"][i] for spec in extra_specs]
+        reference_full_extras = [
+            spec["arrays"][i] for spec in reference_extra_specs
+        ]
+        if blend_mask:
+            full_extras = reference_full_extras + [
+                np.full((h, w), mask_value, dtype=arrays[0].dtype)
+                if i == 0
+                else np.zeros((h, w), dtype=arrays[0].dtype)
+            ]
+        else:
+            full_extras = [spec["arrays"][i] for spec in extra_specs]
         have_crop = False
         x0 = y0 = 0
         crop = arr
@@ -1298,19 +1453,54 @@ def encode_multiframe(
         save_ref = 0
 
         if i == 0:
-            if reference in ("auto", "first") and len(arrays) > 1:
+            if (additive or blend_mask) and len(arrays) > 1:
+                save_ref = 1
+            elif reference in ("auto", "first") and len(arrays) > 1:
                 save_ref = 2
             elif reference == "previous" and len(arrays) > 1:
                 save_ref = 1
         elif reference in ("none", "full"):
             save_ref = 0
+        elif additive:
+            source_ref = _pack_source_ref(1, blend_mode="add")
+            save_ref = 1 if i + 1 < len(arrays) else 0
+        elif blend_mask:
+            ref_main, ref_extras = refs[1]
+            changed = _changed_mask(
+                arr, ref_main, reference_full_extras, ref_extras
+            )
+            diff = _diff_stats_from_mask(changed)
+            x0, y0, x1, y1 = diff.bbox
+            source_ref = _pack_source_ref(
+                1, blend_mode="blend", alpha=mask_alpha_index
+            )
+            save_ref = 1 if i + 1 < len(arrays) else 0
+            if diff.bbox_area < full_area * float(min_crop_ratio):
+                have_crop = True
+                changed_crop = changed[y0:y1, x0:x1]
+                source_crop = arr[y0:y1, x0:x1, :]
+                crop = _masked_payload(source_crop, changed_crop)
+                crop_extras = [
+                    _masked_plane_payload(extra[y0:y1, x0:x1], changed_crop)
+                    for extra in reference_full_extras
+                ]
+            else:
+                changed_crop = changed
+                crop = _masked_payload(arr, changed_crop)
+                crop_extras = [
+                    _masked_plane_payload(extra, changed_crop)
+                    for extra in reference_full_extras
+                ]
+            mask_payload = np.zeros(changed_crop.shape, dtype=arrays[0].dtype)
+            mask_payload[changed_crop] = mask_value
+            crop_extras.append(np.ascontiguousarray(mask_payload))
         else:
             source_ref, diff, _ = _select_reference_bbox(
                 index=i,
                 current=arr,
                 arrays=arrays,
-                current_extras=full_extras,
-                extra_specs=extra_specs,
+                current_extras=reference_full_extras,
+                extra_specs=reference_extra_specs,
                 refs=refs,
                 reference=reference,
             )
@@ -1346,7 +1536,10 @@ def encode_multiframe(
         c_frames[i].save_as_ref = save_ref
 
         if save_ref:
-            refs[save_ref] = (arr, full_extras)
+            refs[save_ref] = (
+                arr,
+                reference_full_extras if blend_mask else full_extras,
+            )
 
         for extra_i, (spec, extra_arr) in enumerate(zip(extra_specs, crop_extras)):
             flat_i = i * len(extra_specs) + extra_i
@@ -1374,7 +1567,7 @@ def encode_multiframe(
         h,
         channels,
         dtype_id,
-        int(bits_per_sample),
+        native_bits_per_sample,
         c_extras,
         len(extra_specs),
         opts,

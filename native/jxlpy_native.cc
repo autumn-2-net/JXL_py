@@ -451,8 +451,19 @@ JxlFrameHeader MakeFrameHeader(uint32_t canvas_xsize, uint32_t canvas_ysize,
     header.layer_info.xsize = canvas_xsize;
     header.layer_info.ysize = canvas_ysize;
   }
-  header.layer_info.blend_info.blendmode = JXL_BLEND_REPLACE;
-  header.layer_info.blend_info.source = frame != nullptr ? frame->source_ref : 0;
+  uint32_t source_ref = frame != nullptr ? frame->source_ref : 0;
+  uint32_t blend_mode = (source_ref >> 8) & 0xffu;
+  uint32_t blend_alpha = (source_ref >> 16) & 0xffu;
+  uint32_t blend_clamp = (source_ref >> 24) & 0x1u;
+  source_ref &= 0x3u;
+  if (blend_mode > static_cast<uint32_t>(JXL_BLEND_MUL)) {
+    blend_mode = static_cast<uint32_t>(JXL_BLEND_REPLACE);
+  }
+  header.layer_info.blend_info.blendmode =
+      static_cast<JxlBlendMode>(blend_mode);
+  header.layer_info.blend_info.source = source_ref;
+  header.layer_info.blend_info.alpha = blend_alpha;
+  header.layer_info.blend_info.clamp = blend_clamp ? JXL_TRUE : JXL_FALSE;
   header.layer_info.save_as_reference =
       frame != nullptr ? frame->save_as_ref : (animation ? 1 : 0);
   return header;
