@@ -269,8 +269,8 @@ way to handle scattered changes:
 - Later frames compare against the previous reconstructed frame.
 - Within the selected bbox, changed pixels contain current samples and
   unchanged pixels are zeroed.
-- An internal `selection_mask` extra channel named `jxlpy_blend_mask` stores
-  1 for changed pixels and 0 for unchanged pixels.
+- An internal 1-bit `selection_mask` extra channel named `jxlpy_blend_mask`
+  stores 1 for changed pixels and 0 for unchanged pixels.
 - The frame header uses `JXL_BLEND_BLEND`, `source=1`, and `alpha` pointing to
   that internal mask.
 
@@ -279,14 +279,26 @@ lets one bbox contain multiple disconnected changed regions. It is safer than
 using the real RGBA alpha as a mask because actual image alpha remains image
 data; the blend mask is a separate extra channel. The tradeoff is that the file
 contains an extra mask channel, which will be visible if callers request all
-extra channels.
+extra channels. The comparison mode `reference="blend_mask8"` stores the same
+mask at the main integer bit depth; surprisingly, this can be smaller on some
+modular inputs because binary 8-bit planes can compress very well.
 
 On `test_img/mt_lay/t1` at `-e 3`, the observed sizes were:
 
 ```text
 full frames : 156930 bytes
 crop/replace:  62096 bytes
-blend mask  :  58594 bytes
+blend mask1 :  62317 bytes
+blend mask8 :  58594 bytes
+```
+
+On `test_img/mt_lay/t2` at `-e 8`, masked BLEND was not beneficial:
+
+```text
+full frames : 5234637 bytes
+crop/replace: 5128162 bytes
+blend mask1 : 5313459 bytes
+blend mask8 : 5315017 bytes
 ```
 
 ### Experimental ADD Residuals
@@ -316,10 +328,11 @@ Run:
 C:\Users\autumn\.conda\envs\py10\python.exe scripts\test_additive_multiframe.py --folder test_img\mt_lay\t1 --effort 3
 ```
 
-The script compares full frames, crop/replace, and masked BLEND, prints size and
-encode time, and checks exact reconstruction. Use `--include-add` to also try
-the ADD residual path, `--skip-synthetic` to only run the folder case, and
-`--limit N` to cap frame count.
+The script compares full frames, crop/replace, masked BLEND 1-bit, and masked
+BLEND full-bit-depth, prints size and encode time, and checks exact
+reconstruction. Use `--include-add` to also try the ADD residual path,
+`--skip-synthetic` to only run the folder case, and `--limit N` to cap frame
+count.
 
 ## Proposed Encoder Policy
 

@@ -1310,13 +1310,17 @@ def encode_multiframe(
         "blend_mask",
         "mask",
         "masked",
+        "blend_mask8",
+        "mask8",
+        "masked8",
     ):
         raise ValueError(
             "reference must be 'auto', 'first', 'previous', 'none', 'full', "
             "'add' or 'blend_mask'"
         )
     additive = reference in ("add", "additive")
-    blend_mask = reference in ("blend_mask", "mask", "masked")
+    blend_mask_8bit = reference in ("blend_mask8", "mask8", "masked8")
+    blend_mask = reference in ("blend_mask", "mask", "masked") or blend_mask_8bit
     arrays = _frame_arrays(frames, layout=layout)
     durs = _durations(durations, len(arrays))
     h, w, channels = arrays[0].shape
@@ -1342,19 +1346,28 @@ def encode_multiframe(
     if blend_mask:
         if additive:
             raise ValueError("blend_mask and add reference modes are mutually exclusive")
-        mask_value = _integer_mask_value(arrays[0].dtype, native_bits_per_sample)
+        _integer_mask_value(arrays[0].dtype, native_bits_per_sample)
+        mask_dtype = np.dtype(arrays[0].dtype) if blend_mask_8bit else np.dtype("uint8")
+        mask_bits_per_sample = (
+            native_bits_per_sample
+            if blend_mask_8bit and native_bits_per_sample
+            else (arrays[0].dtype.itemsize * 8 if blend_mask_8bit else 1)
+        )
+        mask_value = (
+            _integer_mask_value(arrays[0].dtype, native_bits_per_sample)
+            if blend_mask_8bit
+            else np.iinfo(mask_dtype).max
+        )
         mask_alpha_index = (1 if channels in (2, 4) else 0) + len(extra_specs)
         mask_arrays = [
-            np.zeros((h, w), dtype=arrays[0].dtype) for _ in range(len(arrays))
+            np.zeros((h, w), dtype=mask_dtype) for _ in range(len(arrays))
         ]
         extra_specs = [
             *extra_specs,
             {
                 "name": "jxlpy_blend_mask",
                 "type_id": _EXTRA_TYPE_TO_NATIVE["selection_mask"],
-                "bits_per_sample": native_bits_per_sample
-                if native_bits_per_sample
-                else arrays[0].dtype.itemsize * 8,
+                "bits_per_sample": mask_bits_per_sample,
                 "arrays": mask_arrays,
             },
         ]
@@ -1439,9 +1452,9 @@ def encode_multiframe(
         ]
         if blend_mask:
             full_extras = reference_full_extras + [
-                np.full((h, w), mask_value, dtype=arrays[0].dtype)
+                np.full((h, w), mask_value, dtype=mask_dtype)
                 if i == 0
-                else np.zeros((h, w), dtype=arrays[0].dtype)
+                else np.zeros((h, w), dtype=mask_dtype)
             ]
         else:
             full_extras = [spec["arrays"][i] for spec in extra_specs]
@@ -1491,7 +1504,7 @@ def encode_multiframe(
                     _masked_plane_payload(extra, changed_crop)
                     for extra in reference_full_extras
                 ]
-            mask_payload = np.zeros(changed_crop.shape, dtype=arrays[0].dtype)
+            mask_payload = np.zeros(changed_crop.shape, dtype=mask_dtype)
             mask_payload[changed_crop] = mask_value
             crop_extras.append(np.ascontiguousarray(mask_payload))
         else:

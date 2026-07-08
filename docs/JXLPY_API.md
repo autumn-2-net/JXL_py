@@ -118,6 +118,7 @@ Reference modes:
 | `"first"` | Compare only against the first frame. |
 | `"none"` / `"full"` | Store every frame full-size. |
 | `"blend_mask"` / `"mask"` | Experimental: store changed pixels plus an internal binary mask extra channel, then compose with `JXL_BLEND_BLEND` against the previous reference. |
+| `"blend_mask8"` / `"mask8"` | Experimental comparison mode: same as `blend_mask`, but store the mask at the main image integer bit depth instead of declaring it as 1-bit. |
 | `"add"` / `"additive"` | Experimental: store full-frame float32 residuals and compose with `JXL_BLEND_ADD`. |
 
 Example:
@@ -144,14 +145,15 @@ jxl = jxlpy.encode_multiframe(
 ```
 
 `reference="blend_mask"` keeps integer samples, uses the previous frame as the
-reference, and adds an internal `selection_mask` extra channel named
+reference, and adds an internal 1-bit `selection_mask` extra channel named
 `jxlpy_blend_mask`. Within the selected bbox, changed pixels contain current
 samples and mask value 1; unchanged pixels are zeroed and mask value 0. The
 decoder composites with `JXL_BLEND_BLEND`, so unchanged pixels come from the
 previous reference. Main-image decoding remains exact for `uint8`/`uint16`
 inputs, including RGBA, because the mask is separate from the real alpha
 channel. If all extra channels are requested during decode, the internal mask is
-visible as an extra channel.
+visible as an extra channel. `reference="blend_mask8"` keeps the older full
+integer bit-depth mask for comparison; it can be smaller on some modular inputs.
 
 Experimental ADD residual mode:
 
