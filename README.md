@@ -126,6 +126,9 @@ Detailed Python wrapper notes are in:
 
 ```text
 docs/JXLPY_USAGE.md
+docs/JXLPY_API.md
+docs/JXLPY_ENCODER_OPTIONS.md
+docs/JXL_ENCODER_PARAMETER_REFERENCE.md
 ```
 
 Linux/macOS helper scripts are also present:

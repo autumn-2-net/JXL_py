@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -170,6 +171,191 @@ def _optional_bool(value: bool | None) -> int:
     return -1 if value is None else (1 if value else 0)
 
 
+def _resolve_alias(primary_name: str, primary_value: Any, alias_name: str, alias_value: Any):
+    if alias_value is None:
+        return primary_value
+    if primary_value is not None and primary_value != alias_value:
+        raise ValueError(f"set either {primary_name} or {alias_name}, not both")
+    return alias_value
+
+
+_FRAME_SETTING_IDS = {
+    "effort": 0,
+    "decoding_speed": 1,
+    "resampling": 2,
+    "extra_channel_resampling": 3,
+    "already_downsampled": 4,
+    "photon_noise": 5,
+    "noise": 6,
+    "dots": 7,
+    "patches": 8,
+    "epf": 9,
+    "gaborish": 10,
+    "modular": 11,
+    "keep_invisible": 12,
+    "group_order": 13,
+    "group_order_center_x": 14,
+    "group_order_center_y": 15,
+    "responsive": 16,
+    "progressive_ac": 17,
+    "qprogressive_ac": 18,
+    "progressive_dc": 19,
+    "channel_colors_global_percent": 20,
+    "channel_colors_group_percent": 21,
+    "palette_colors": 22,
+    "lossy_palette": 23,
+    "color_transform": 24,
+    "modular_color_space": 25,
+    "modular_group_size": 26,
+    "modular_predictor": 27,
+    "modular_ma_tree_learning_percent": 28,
+    "modular_nb_prev_channels": 29,
+    "jpeg_recon_cfl": 30,
+    "frame_index_box": 31,
+    "brotli_effort": 32,
+    "jpeg_compress_boxes": 33,
+    "buffering": 34,
+    "jpeg_keep_exif": 35,
+    "jpeg_keep_xmp": 36,
+    "jpeg_keep_jumbf": 37,
+    "use_full_image_heuristics": 38,
+    "disable_perceptual_heuristics": 39,
+    "output_mode": 40,
+}
+
+_FRAME_SETTING_ALIASES = {
+    "faster_decoding": "decoding_speed",
+    "ec_resampling": "extra_channel_resampling",
+    "photon_noise_iso": "photon_noise",
+    "center_x": "group_order_center_x",
+    "center_y": "group_order_center_y",
+    "pre_compact": "channel_colors_global_percent",
+    "post_compact": "channel_colors_group_percent",
+    "modular_channel_colors_global_percent": "channel_colors_global_percent",
+    "modular_channel_colors_group_percent": "channel_colors_group_percent",
+    "modular_palette_colors": "palette_colors",
+    "modular_lossy_palette": "lossy_palette",
+    "modular_colorspace": "modular_color_space",
+    "iterations": "modular_ma_tree_learning_percent",
+    "jpeg_reconstruction_cfl": "jpeg_recon_cfl",
+    "frame_indexing": "frame_index_box",
+    "index_box": "frame_index_box",
+    "compress_boxes": "jpeg_compress_boxes",
+    "disable_perceptual_optimizations": "disable_perceptual_heuristics",
+    "use_full_image": "use_full_image_heuristics",
+}
+
+_FLOAT_FRAME_SETTING_IDS = {5, 20, 21, 28}
+
+
+def _normalize_frame_setting_key(key: Any) -> int:
+    if isinstance(key, int):
+        return key
+    text = str(key).strip()
+    if text.isdigit():
+        return int(text)
+    text = text.lower().replace("-", "_")
+    prefix = "jxl_enc_frame_setting_"
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+    prefix = "jxl_enc_frame_"
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+    text = _FRAME_SETTING_ALIASES.get(text, text)
+    if text not in _FRAME_SETTING_IDS:
+        raise ValueError(f"unknown encoder option or frame setting: {key!r}")
+    return _FRAME_SETTING_IDS[text]
+
+
+def _coerce_frame_setting_value(setting_id: int, value: Any) -> tuple[bool, int, float]:
+    force_float = None
+    if (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and str(value[0]).lower() in ("int", "float")
+    ):
+        force_float = str(value[0]).lower() == "float"
+        value = value[1]
+
+    if isinstance(value, bool):
+        value = 1 if value else 0
+
+    is_float = (
+        force_float
+        if force_float is not None
+        else setting_id in _FLOAT_FRAME_SETTING_IDS
+        or (isinstance(value, float) and not value.is_integer())
+    )
+    if is_float:
+        return True, 0, float(value)
+    return False, int(value), 0.0
+
+
+def _native_supports_frame_settings_passthrough() -> bool:
+    try:
+        return bool(lib.jxlpy_supports_frame_settings_passthrough())
+    except AttributeError:
+        return False
+
+
+def _iter_frame_settings(settings: Any):
+    if settings is None:
+        return []
+    if isinstance(settings, Mapping):
+        return list(settings.items())
+    return list(settings)
+
+
+def _make_frame_settings(settings: Any, keepalive: list[Any]):
+    entries = _iter_frame_settings(settings)
+    if not entries:
+        return ffi.NULL, 0
+    parsed = []
+    for entry in entries:
+        if len(entry) != 2:
+            raise ValueError("frame_settings entries must be (name_or_id, value)")
+        key, value = entry
+        setting_id = _normalize_frame_setting_key(key)
+        is_float, int_value, float_value = _coerce_frame_setting_value(
+            setting_id, value
+        )
+        parsed.append((setting_id, is_float, int_value, float_value))
+    if not _native_supports_frame_settings_passthrough():
+        raise RuntimeError(
+            "frame_settings passthrough requires rebuilding jxlpy_native"
+        )
+    c_settings = ffi.new("jxlpy_encoder_setting[]", len(parsed))
+    for i, (setting_id, is_float, int_value, float_value) in enumerate(parsed):
+        c_settings[i].id = setting_id
+        c_settings[i].is_float = 1 if is_float else 0
+        c_settings[i].int_value = int_value
+        c_settings[i].float_value = float_value
+    keepalive.append(c_settings)
+    return c_settings, len(entries)
+
+
+def _merge_encoder_options(
+    option_kwargs: dict[str, Any],
+    encoder_options: Mapping[str, Any] | None,
+    frame_settings: Any,
+):
+    merged_frame_settings = []
+    if frame_settings is not None:
+        merged_frame_settings.extend(_iter_frame_settings(frame_settings))
+    if encoder_options is None:
+        return merged_frame_settings
+    if not isinstance(encoder_options, Mapping):
+        raise TypeError("encoder_options must be a mapping")
+    for key, value in encoder_options.items():
+        if key == "frame_settings":
+            merged_frame_settings.extend(_iter_frame_settings(value))
+        elif key in option_kwargs:
+            option_kwargs[key] = value
+        else:
+            merged_frame_settings.append((key, value))
+    return merged_frame_settings
+
+
 def _parse_extra_spec(spec: Any) -> tuple[str, int, int, Any]:
     name = ""
     type_id = _EXTRA_TYPE_TO_NATIVE["unknown"]
@@ -329,7 +515,7 @@ def _select_reference_bbox(
 
     return min(
         candidates,
-        key=lambda item: item[1].bbox_area,
+        key=lambda item: (item[1].bbox_area, item[1].changed_pixels),
     )
 
 
@@ -378,13 +564,36 @@ def _options(
     modular_predictor: int | None = None,
     modular_colorspace: int | None = None,
     modular_ma_tree_learning_percent: float | None = None,
+    iterations: float | None = None,
     modular_nb_prev_channels: int | None = None,
     modular_palette_colors: int | None = None,
     modular_lossy_palette: bool | None = None,
     modular_channel_colors_global_percent: float | None = None,
     modular_channel_colors_group_percent: float | None = None,
+    pre_compact: float | None = None,
+    post_compact: float | None = None,
     tps: tuple[int, int] = (1000, 1),
+    frame_settings: Any = None,
+    _keepalive: list[Any] | None = None,
 ):
+    modular_ma_tree_learning_percent = _resolve_alias(
+        "modular_ma_tree_learning_percent",
+        modular_ma_tree_learning_percent,
+        "iterations",
+        iterations,
+    )
+    modular_channel_colors_global_percent = _resolve_alias(
+        "modular_channel_colors_global_percent",
+        modular_channel_colors_global_percent,
+        "pre_compact",
+        pre_compact,
+    )
+    modular_channel_colors_group_percent = _resolve_alias(
+        "modular_channel_colors_group_percent",
+        modular_channel_colors_group_percent,
+        "post_compact",
+        post_compact,
+    )
     if lossless is None:
         lossless = distance is None or float(distance) == 0.0
     if distance is None:
@@ -458,6 +667,10 @@ def _options(
     opts.modular_channel_colors_group_percent = _optional_float(
         modular_channel_colors_group_percent
     )
+    keepalive = [] if _keepalive is None else _keepalive
+    c_settings, num_settings = _make_frame_settings(frame_settings, keepalive)
+    opts.extra_encoder_settings = c_settings
+    opts.num_extra_encoder_settings = num_settings
     return opts
 
 
@@ -567,14 +780,19 @@ def encode(
     modular_predictor: int | None = None,
     modular_colorspace: int | None = None,
     modular_ma_tree_learning_percent: float | None = None,
+    iterations: float | None = None,
     modular_nb_prev_channels: int | None = None,
     modular_palette_colors: int | None = None,
     modular_lossy_palette: bool | None = None,
     modular_channel_colors_global_percent: float | None = None,
     modular_channel_colors_group_percent: float | None = None,
+    pre_compact: float | None = None,
+    post_compact: float | None = None,
+    encoder_options: Mapping[str, Any] | None = None,
+    frame_settings: Any = None,
 ):
     """Encode a path, encoded image bytes, numpy array or torch tensor to JXL."""
-    opts = _options(
+    option_kwargs = dict(
         lossless=lossless,
         distance=distance,
         alpha_distance=alpha_distance,
@@ -618,11 +836,23 @@ def encode(
         modular_predictor=modular_predictor,
         modular_colorspace=modular_colorspace,
         modular_ma_tree_learning_percent=modular_ma_tree_learning_percent,
+        iterations=iterations,
         modular_nb_prev_channels=modular_nb_prev_channels,
         modular_palette_colors=modular_palette_colors,
         modular_lossy_palette=modular_lossy_palette,
         modular_channel_colors_global_percent=modular_channel_colors_global_percent,
         modular_channel_colors_group_percent=modular_channel_colors_group_percent,
+        pre_compact=pre_compact,
+        post_compact=post_compact,
+    )
+    merged_frame_settings = _merge_encoder_options(
+        option_kwargs, encoder_options, frame_settings
+    )
+    option_keepalive: list[Any] = []
+    opts = _options(
+        **option_kwargs,
+        frame_settings=merged_frame_settings,
+        _keepalive=option_keepalive,
     )
 
     if isinstance(src, (str, Path, bytes, bytearray, memoryview)):
@@ -960,11 +1190,16 @@ def encode_multiframe(
     modular_predictor: int | None = None,
     modular_colorspace: int | None = None,
     modular_ma_tree_learning_percent: float | None = None,
+    iterations: float | None = None,
     modular_nb_prev_channels: int | None = None,
     modular_palette_colors: int | None = None,
     modular_lossy_palette: bool | None = None,
     modular_channel_colors_global_percent: float | None = None,
     modular_channel_colors_group_percent: float | None = None,
+    pre_compact: float | None = None,
+    post_compact: float | None = None,
+    encoder_options: Mapping[str, Any] | None = None,
+    frame_settings: Any = None,
 ):
     """Encode multiple frames, with optional exact REPLACE+crop delta frames."""
     if reference not in ("auto", "first", "previous", "none", "full"):
@@ -981,7 +1216,7 @@ def encode_multiframe(
         layout=layout,
     )
 
-    opts = _options(
+    option_kwargs = dict(
         lossless=lossless,
         distance=distance,
         alpha_distance=alpha_distance,
@@ -1018,17 +1253,30 @@ def encode_multiframe(
         premultiply=premultiply,
         override_bitdepth=override_bitdepth,
         buffering=buffering,
+        jpeg_reconstruction_cfl=None,
         disable_perceptual_optimizations=disable_perceptual_optimizations,
         modular_group_size=modular_group_size,
         modular_predictor=modular_predictor,
         modular_colorspace=modular_colorspace,
         modular_ma_tree_learning_percent=modular_ma_tree_learning_percent,
+        iterations=iterations,
         modular_nb_prev_channels=modular_nb_prev_channels,
         modular_palette_colors=modular_palette_colors,
         modular_lossy_palette=modular_lossy_palette,
         modular_channel_colors_global_percent=modular_channel_colors_global_percent,
         modular_channel_colors_group_percent=modular_channel_colors_group_percent,
+        pre_compact=pre_compact,
+        post_compact=post_compact,
         tps=tps,
+    )
+    merged_frame_settings = _merge_encoder_options(
+        option_kwargs, encoder_options, frame_settings
+    )
+    option_keepalive: list[Any] = []
+    opts = _options(
+        **option_kwargs,
+        frame_settings=merged_frame_settings,
+        _keepalive=option_keepalive,
     )
 
     c_frames = ffi.new("jxlpy_frame[]", len(arrays))

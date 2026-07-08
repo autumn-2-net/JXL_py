@@ -22,6 +22,13 @@ enum {
 };
 
 typedef struct {
+  int32_t id;
+  int32_t is_float;
+  int64_t int_value;
+  float float_value;
+} jxlpy_encoder_setting;
+
+typedef struct {
   int lossless;
   float distance;
   float alpha_distance;
@@ -71,6 +78,8 @@ typedef struct {
   int modular_lossy_palette;
   float modular_channel_colors_global_percent;
   float modular_channel_colors_group_percent;
+  const jxlpy_encoder_setting* extra_encoder_settings;
+  size_t num_extra_encoder_settings;
 } jxlpy_encode_options;
 
 typedef struct {
@@ -125,6 +134,7 @@ typedef struct {
 } jxlpy_result;
 
 JXLPY_EXPORT const char* jxlpy_version(void);
+JXLPY_EXPORT int jxlpy_supports_frame_settings_passthrough(void);
 JXLPY_EXPORT void jxlpy_free_result(jxlpy_result* result);
 
 JXLPY_EXPORT jxlpy_result jxlpy_encode_pixels(

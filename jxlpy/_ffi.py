@@ -18,6 +18,13 @@ ffi.cdef(
     };
 
     typedef struct {
+      int32_t id;
+      int32_t is_float;
+      int64_t int_value;
+      float float_value;
+    } jxlpy_encoder_setting;
+
+    typedef struct {
       int lossless;
       float distance;
       float alpha_distance;
@@ -67,6 +74,8 @@ ffi.cdef(
       int modular_lossy_palette;
       float modular_channel_colors_global_percent;
       float modular_channel_colors_group_percent;
+      const jxlpy_encoder_setting* extra_encoder_settings;
+      size_t num_extra_encoder_settings;
     } jxlpy_encode_options;
 
     typedef struct {
@@ -121,6 +130,7 @@ ffi.cdef(
     } jxlpy_result;
 
     const char* jxlpy_version(void);
+    int jxlpy_supports_frame_settings_passthrough(void);
     void jxlpy_free_result(jxlpy_result* result);
 
     jxlpy_result jxlpy_encode_pixels(

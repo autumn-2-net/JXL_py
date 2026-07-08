@@ -220,6 +220,20 @@ void AddFloatOptionIfSet(jxl::extras::JXLCompressParams* params,
   }
 }
 
+void AddExtraEncoderSettings(jxl::extras::JXLCompressParams* params,
+                             const jxlpy_encode_options& options) {
+  if (options.extra_encoder_settings == nullptr) return;
+  for (size_t i = 0; i < options.num_extra_encoder_settings; ++i) {
+    const jxlpy_encoder_setting& setting = options.extra_encoder_settings[i];
+    const auto id = static_cast<JxlEncoderFrameSettingId>(setting.id);
+    if (setting.is_float) {
+      params->AddFloatOption(id, setting.float_value);
+    } else {
+      params->AddOption(id, setting.int_value);
+    }
+  }
+}
+
 jxl::extras::JXLCompressParams MakeCompressParams(
     const jxlpy_encode_options& options, void* runner) {
   jxl::extras::JXLCompressParams params;
@@ -315,6 +329,7 @@ jxl::extras::JXLCompressParams MakeCompressParams(
   if (options.disable_perceptual_optimizations) {
     params.AddOption(JXL_ENC_FRAME_SETTING_DISABLE_PERCEPTUAL_HEURISTICS, 1);
   }
+  AddExtraEncoderSettings(&params, options);
   return params;
 }
 
@@ -510,6 +525,8 @@ uint32_t DefaultDecodeDtype(const JxlBasicInfo& info) {
 extern "C" {
 
 const char* jxlpy_version(void) { return "jxlpy_native/0.1"; }
+
+int jxlpy_supports_frame_settings_passthrough(void) { return 1; }
 
 void jxlpy_free_result(jxlpy_result* result) {
   if (result == nullptr) return;

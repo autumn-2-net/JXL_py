@@ -102,8 +102,97 @@ def test_analyze_auto_alignment():
     print()
 
 
+def test_cjxl_modular_aliases():
+    print("=== cjxl Modular Aliases ===")
+
+    img = np.zeros((16, 16, 3), dtype=np.uint8)
+    img[2:14, 2:14] = (255, 255, 255)
+    img[:, 7:9] = (0, 0, 0)
+
+    alias = jxlpy.encode(
+        img,
+        distance=0,
+        effort=1,
+        modular_group_size=3,
+        iterations=100,
+        modular_predictor=0,
+        modular_palette_colors=10000,
+        patches=False,
+        post_compact=0,
+    )
+    explicit = jxlpy.encode(
+        img,
+        distance=0,
+        effort=1,
+        modular_group_size=3,
+        modular_ma_tree_learning_percent=100,
+        modular_predictor=0,
+        modular_palette_colors=10000,
+        patches=False,
+        modular_channel_colors_group_percent=0,
+    )
+    if alias != explicit:
+        raise AssertionError("alias options did not match explicit options")
+    if not np.array_equal(jxlpy.decode(alias), img):
+        raise AssertionError("alias-encoded image did not roundtrip")
+
+    via_dict = jxlpy.encode(
+        img,
+        encoder_options={
+            "distance": 0,
+            "effort": 1,
+            "modular_group_size": 3,
+            "iterations": 100,
+            "modular_predictor": 0,
+            "modular_palette_colors": 10000,
+            "patches": False,
+            "post_compact": 0,
+        },
+    )
+    if via_dict != alias:
+        raise AssertionError("encoder_options dict did not match keyword options")
+
+    try:
+        jxlpy.encode(img, iterations=50, modular_ma_tree_learning_percent=100)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("conflicting alias options should fail")
+
+    print(f"  encoded: {len(alias)} bytes")
+    print("  RESULT: PASS")
+    print()
+
+
+def test_frame_settings_passthrough():
+    print("=== Raw Frame Settings Passthrough ===")
+
+    img = np.zeros((16, 16, 3), dtype=np.uint8)
+    try:
+        jxl = jxlpy.encode(
+            img,
+            distance=0,
+            effort=1,
+            frame_settings={"use_full_image_heuristics": 0},
+        )
+    except RuntimeError as exc:
+        if "requires rebuilding" in str(exc):
+            print("  SKIP: native shim has not been rebuilt for passthrough")
+            print()
+            return
+        raise
+    if not np.array_equal(jxlpy.decode(jxl), img):
+        raise AssertionError("frame_settings-encoded image did not roundtrip")
+
+    print(f"  encoded: {len(jxl)} bytes")
+    print("  RESULT: PASS")
+    print()
+
+
 if __name__ == "__main__":
     test_jpeg_reconstruct()
     test_analyze()
     test_analyze_auto_alignment()
+    test_cjxl_modular_aliases()
+    test_frame_settings_passthrough()
     print("Done.")
