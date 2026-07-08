@@ -174,6 +174,10 @@ struct CompressParams {
   // See JXL_ENC_FRAME_SETTING_USE_FULL_IMAGE_HEURISTICS option value.
   bool use_full_image_heuristics = true;
 
+  // jxlpy experiment: use manual full-frame PatchDictionary kAdd residuals
+  // against a previous pre-color-transform reference frame.
+  bool experimental_interframe_patch = false;
+
   std::vector<float> manual_noise;
   std::vector<float> manual_xyb_factors;
 

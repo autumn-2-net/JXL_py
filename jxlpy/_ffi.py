@@ -76,6 +76,7 @@ ffi.cdef(
       float modular_channel_colors_group_percent;
       const jxlpy_encoder_setting* extra_encoder_settings;
       size_t num_extra_encoder_settings;
+      int experimental_interframe_patch;
     } jxlpy_encode_options;
 
     typedef struct {

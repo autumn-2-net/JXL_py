@@ -253,6 +253,7 @@ _FRAME_SETTING_IDS = {
     "use_full_image_heuristics": 38,
     "disable_perceptual_heuristics": 39,
     "output_mode": 40,
+    "experimental_interframe_patch": 65000,
 }
 
 _FRAME_SETTING_ALIASES = {
@@ -327,6 +328,15 @@ def _native_supports_frame_settings_passthrough() -> bool:
     try:
         return bool(lib.jxlpy_supports_frame_settings_passthrough())
     except AttributeError:
+        return False
+
+
+def _native_supports_patch_add() -> bool:
+    try:
+        return "patch-add" in ffi.string(lib.jxlpy_version()).decode(
+            "ascii", "replace"
+        )
+    except Exception:
         return False
 
 
@@ -618,6 +628,7 @@ def _options(
     modular_channel_colors_group_percent: float | None = None,
     pre_compact: float | None = None,
     post_compact: float | None = None,
+    experimental_interframe_patch: bool = False,
     tps: tuple[int, int] = (1000, 1),
     frame_settings: Any = None,
     _keepalive: list[Any] | None = None,
@@ -713,6 +724,7 @@ def _options(
     opts.modular_channel_colors_group_percent = _optional_float(
         modular_channel_colors_group_percent
     )
+    opts.experimental_interframe_patch = 1 if experimental_interframe_patch else 0
     keepalive = [] if _keepalive is None else _keepalive
     c_settings, num_settings = _make_frame_settings(frame_settings, keepalive)
     opts.extra_encoder_settings = c_settings
@@ -1313,14 +1325,18 @@ def encode_multiframe(
         "blend_mask8",
         "mask8",
         "masked8",
+        "patch_add",
+        "internal_patch_add",
+        "patch-add",
     ):
         raise ValueError(
             "reference must be 'auto', 'first', 'previous', 'none', 'full', "
-            "'add' or 'blend_mask'"
+            "'add', 'blend_mask' or 'patch_add'"
         )
     additive = reference in ("add", "additive")
     blend_mask_8bit = reference in ("blend_mask8", "mask8", "masked8")
     blend_mask = reference in ("blend_mask", "mask", "masked") or blend_mask_8bit
+    patch_add = reference in ("patch_add", "internal_patch_add", "patch-add")
     arrays = _frame_arrays(frames, layout=layout)
     durs = _durations(durations, len(arrays))
     h, w, channels = arrays[0].shape
@@ -1341,6 +1357,23 @@ def encode_multiframe(
         native_bits_per_sample = 0
         if modular is None:
             modular = 1
+    if patch_add:
+        if not _native_supports_patch_add():
+            raise RuntimeError(
+                "reference='patch_add' requires rebuilding jxlpy_native from "
+                "this experimental branch"
+            )
+        if additive or blend_mask:
+            raise ValueError("patch_add cannot be combined with add or blend_mask")
+        if len(arrays) > 1 and arrays[0].dtype not in (
+            np.dtype("uint8"),
+            np.dtype("uint16"),
+        ):
+            raise TypeError("patch_add currently requires uint8 or uint16 frames")
+        if modular is None:
+            modular = 1
+        if patches is None:
+            patches = False
     mask_value = 0
     mask_alpha_index = 0
     if blend_mask:
@@ -1425,6 +1458,7 @@ def encode_multiframe(
         modular_channel_colors_group_percent=modular_channel_colors_group_percent,
         pre_compact=pre_compact,
         post_compact=post_compact,
+        experimental_interframe_patch=patch_add,
         tps=tps,
     )
     merged_frame_settings = _merge_encoder_options(
@@ -1466,7 +1500,7 @@ def encode_multiframe(
         save_ref = 0
 
         if i == 0:
-            if (additive or blend_mask) and len(arrays) > 1:
+            if (additive or blend_mask or patch_add) and len(arrays) > 1:
                 save_ref = 1
             elif reference in ("auto", "first") and len(arrays) > 1:
                 save_ref = 2
@@ -1476,6 +1510,9 @@ def encode_multiframe(
             save_ref = 0
         elif additive:
             source_ref = _pack_source_ref(1, blend_mode="add")
+            save_ref = 1 if i + 1 < len(arrays) else 0
+        elif patch_add:
+            source_ref = _pack_source_ref(1, blend_mode="replace")
             save_ref = 1 if i + 1 < len(arrays) else 0
         elif blend_mask:
             ref_main, ref_extras = refs[1]

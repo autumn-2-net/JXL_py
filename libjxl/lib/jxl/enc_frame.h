@@ -10,6 +10,7 @@
 #include <jxl/memory_manager.h>
 #include <jxl/types.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -17,6 +18,7 @@
 
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/dec_patch_dictionary.h"
 #include "lib/jxl/enc_bit_writer.h"
 #include "lib/jxl/enc_cache.h"
 #include "lib/jxl/enc_params.h"
@@ -99,7 +101,9 @@ Status EncodeFrame(JxlMemoryManager* memory_manager,
                    JxlEncoderChunkedFrameAdapter& frame_data,
                    const JxlCmsInterface& cms, ThreadPool* pool,
                    JxlEncoderOutputProcessorWrapper* output_processor,
-                   AuxOut* aux_out, uint32_t* jxlp_counter);
+                   AuxOut* aux_out, uint32_t* jxlp_counter,
+                   std::array<ReferenceFrame, 4>* experimental_reference_frames =
+                       nullptr);
 
 Status EncodeFrame(JxlMemoryManager* memory_manager,
                    const CompressParams& cparams_orig,

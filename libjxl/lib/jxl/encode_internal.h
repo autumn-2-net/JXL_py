@@ -31,6 +31,7 @@
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/dec_patch_dictionary.h"
 #include "lib/jxl/enc_fast_lossless.h"
 #include "lib/jxl/enc_params.h"
 #include "lib/jxl/image_metadata.h"
@@ -656,6 +657,7 @@ struct JxlEncoder {
   std::vector<uint8_t> jpeg_metadata;
 
   jxl::CompressParams last_used_cparams;
+  std::array<jxl::ReferenceFrame, 4> experimental_patch_reference_frames;
   JxlBasicInfo basic_info;
 
   JxlEncoderError error = JxlEncoderError::JXL_ENC_ERR_OK;

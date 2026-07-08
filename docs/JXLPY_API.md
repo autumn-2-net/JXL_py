@@ -106,7 +106,7 @@ jxlpy.encode_multiframe(frames, output=None, **options)
 ```
 
 By default the wrapper stores exact delta layers using `JXL_BLEND_REPLACE` plus
-crop. It also has experimental masked BLEND and ADD residual modes for testing
+crop. It also has experimental masked BLEND and residual modes for testing
 scattered changes.
 
 Reference modes:
@@ -120,6 +120,7 @@ Reference modes:
 | `"blend_mask"` / `"mask"` | Experimental: store changed pixels plus an internal binary mask extra channel, then compose with `JXL_BLEND_BLEND` against the previous reference. |
 | `"blend_mask8"` / `"mask8"` | Experimental comparison mode: same as `blend_mask`, but store the mask at the main image integer bit depth instead of declaring it as 1-bit. |
 | `"add"` / `"additive"` | Experimental: store full-frame float32 residuals and compose with `JXL_BLEND_ADD`. |
+| `"patch_add"` / `"internal_patch_add"` | Experimental fork-only mode: keep uint8/uint16 frames, then let libjxl's internal PatchDictionary encode tiled full-frame `kAdd` residuals against the previous reference. |
 
 Example:
 
@@ -171,6 +172,27 @@ first frame directly, and stores later frames as `current - previous` with
 `JXL_BLEND_ADD`. This can help scattered changes avoid a huge crop bbox, but it
 is an experiment: decoded frames are float samples, and exact byte-for-byte
 RGBA preservation must be validated for the target data.
+
+Experimental internal PatchDictionary ADD mode:
+
+```python
+jxl = jxlpy.encode_multiframe(
+    frames,
+    distance=0,
+    effort=3,
+    reference="patch_add",
+)
+```
+
+`reference="patch_add"` requires the patched libjxl build in this repository.
+It stores the first frame as a pre-color-transform reference, then later
+full-size frames use internal tiled PatchDictionary `kAdd` patches against
+reference `1`. The encoder subtracts `previous` from `current` internally while
+the Python API still receives ordinary `uint8`/`uint16` frames. Current
+limitations: lossless modular only, fixed tile splitting, and extra channels are
+encoded normally rather than as patch residuals. When extra channels are present,
+the internal color patches are limited to the 8-pixel-aligned top-left region;
+right/bottom tail strips are stored as ordinary full pixels for exact restore.
 
 Read the reconstructed frame:
 

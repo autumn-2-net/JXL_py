@@ -129,6 +129,130 @@ Status ParamsPostInit(CompressParams* p) {
   return true;
 }
 
+Status ImportExperimentalReferenceFrames(
+    const std::array<ReferenceFrame, 4>* experimental_reference_frames,
+    PassesSharedState* shared) {
+  if (experimental_reference_frames == nullptr) return true;
+  for (size_t i = 0; i < experimental_reference_frames->size(); ++i) {
+    const ReferenceFrame& src = (*experimental_reference_frames)[i];
+    if (src.frame == nullptr || !src.frame->HasColor()) continue;
+    JXL_ASSIGN_OR_RETURN(ImageBundle copy, src.frame->Copy());
+    *shared->reference_frames[i].frame = std::move(copy);
+    shared->reference_frames[i].ib_is_in_xyb = src.ib_is_in_xyb;
+  }
+  return true;
+}
+
+Status SaveExperimentalReferenceFrame(
+    JxlMemoryManager* memory_manager, const CodecMetadata* metadata,
+    const FrameHeader& frame_header, const Image3F& color,
+    const std::vector<ImageF>& extra_channels,
+    std::array<ReferenceFrame, 4>* experimental_reference_frames) {
+  if (experimental_reference_frames == nullptr ||
+      !frame_header.CanBeReferenced() ||
+      !frame_header.save_before_color_transform) {
+    return true;
+  }
+  if (frame_header.save_as_reference >= experimental_reference_frames->size()) {
+    return JXL_FAILURE("invalid experimental patch reference id %" PRIuS,
+                       static_cast<size_t>(frame_header.save_as_reference));
+  }
+
+  JXL_ASSIGN_OR_RETURN(Image3F color_copy,
+                       Image3F::Create(memory_manager, color.xsize(),
+                                       color.ysize()));
+  JXL_RETURN_IF_ERROR(CopyImageTo(color, &color_copy));
+
+  std::vector<ImageF> extra_copy;
+  extra_copy.reserve(extra_channels.size());
+  for (const ImageF& extra : extra_channels) {
+    JXL_ASSIGN_OR_RETURN(
+        ImageF plane,
+        ImageF::Create(memory_manager, extra.xsize(), extra.ysize()));
+    JXL_RETURN_IF_ERROR(CopyImageTo(extra, &plane));
+    extra_copy.emplace_back(std::move(plane));
+  }
+
+  ImageBundle bundle(memory_manager, &metadata->m);
+  JXL_RETURN_IF_ERROR(
+      bundle.SetFromImage(std::move(color_copy), metadata->m.color_encoding));
+  JXL_RETURN_IF_ERROR(bundle.SetExtraChannels(std::move(extra_copy)));
+
+  ReferenceFrame& dst =
+      (*experimental_reference_frames)[frame_header.save_as_reference];
+  dst.frame = jxl::make_unique<ImageBundle>(std::move(bundle));
+  dst.ib_is_in_xyb = true;
+  return true;
+}
+
+Status ApplyExperimentalInterframePatch(
+    const FrameInfo& frame_info, const FrameHeader& frame_header,
+    PassesSharedState* shared, Image3F* color) {
+  constexpr size_t kExperimentalPatchTileSize = 512;
+  const size_t source = frame_info.source;
+  if (source == 0) return true;
+  if (frame_header.custom_size_or_origin) {
+    return JXL_FAILURE(
+        "experimental interframe patch currently requires full-size frames");
+  }
+  if (source >= shared->reference_frames.size() ||
+      shared->reference_frames[source].frame == nullptr ||
+      !shared->reference_frames[source].frame->HasColor()) {
+    return JXL_FAILURE("missing experimental interframe patch reference %" PRIuS,
+                       source);
+  }
+  if (!shared->reference_frames[source].ib_is_in_xyb) {
+    return JXL_FAILURE(
+        "experimental interframe patch reference must be saved before color "
+        "transform");
+  }
+
+  const Image3F& reference =
+      *shared->reference_frames[source].frame->color();
+  if (reference.xsize() < color->xsize() || reference.ysize() < color->ysize()) {
+    return JXL_FAILURE(
+        "experimental interframe patch reference is smaller than current "
+        "frame");
+  }
+
+  std::vector<PatchReferencePosition> ref_positions;
+  std::vector<PatchPosition> positions;
+  std::vector<PatchBlending> blendings;
+  const size_t blending_stride =
+      frame_header.nonserialized_metadata->m.num_extra_channels + 1;
+  const bool has_extra_channels =
+      frame_header.nonserialized_metadata->m.num_extra_channels != 0;
+  const size_t patch_xsize =
+      has_extra_channels ? (color->xsize() & ~size_t{7}) : color->xsize();
+  const size_t patch_ysize =
+      has_extra_channels ? (color->ysize() & ~size_t{7}) : color->ysize();
+  if (patch_xsize == 0 || patch_ysize == 0) return true;
+  for (size_t y = 0; y < patch_ysize; y += kExperimentalPatchTileSize) {
+    const size_t tile_ysize =
+        std::min(kExperimentalPatchTileSize, patch_ysize - y);
+    for (size_t x = 0; x < patch_xsize; x += kExperimentalPatchTileSize) {
+      const size_t tile_xsize =
+          std::min(kExperimentalPatchTileSize, patch_xsize - x);
+      const size_t ref_pos_idx = ref_positions.size();
+      ref_positions.push_back(
+          PatchReferencePosition{source, x, y, tile_xsize, tile_ysize});
+      positions.push_back(PatchPosition{x, y, ref_pos_idx});
+      blendings.push_back(PatchBlending{PatchBlendMode::kAdd, 0, false});
+      for (size_t i = 1; i < blending_stride; ++i) {
+        blendings.push_back(PatchBlending{PatchBlendMode::kNone, 0, false});
+      }
+    }
+  }
+
+  PatchDictionaryEncoder::SetPositions(
+      &shared->image_features.patches, std::move(positions),
+      std::move(ref_positions), std::move(blendings), blending_stride);
+  JXL_RETURN_IF_ERROR(
+      PatchDictionaryEncoder::SubtractFrom(shared->image_features.patches,
+                                           color));
+  return true;
+}
+
 namespace {
 
 uint32_t GetGroupSizeShift(size_t xsize, size_t ysize,
@@ -1504,7 +1628,8 @@ Status ComputeEncodingData(
     size_t ysize, const JxlCmsInterface& cms, ThreadPool* pool,
     FrameHeader& mutable_frame_header, ModularFrameEncoder& enc_modular,
     PassesEncoderState& enc_state,
-    std::vector<std::unique_ptr<BitWriter>>* group_codes, AuxOut* aux_out) {
+    std::vector<std::unique_ptr<BitWriter>>* group_codes, AuxOut* aux_out,
+    std::array<ReferenceFrame, 4>* experimental_reference_frames) {
   JXL_ENSURE(x0 + xsize <= frame_data.xsize);
   JXL_ENSURE(y0 + ysize <= frame_data.ysize);
   JxlMemoryManager* memory_manager = enc_state.memory_manager();
@@ -1522,6 +1647,8 @@ Status ComputeEncodingData(
   }
 
   shared.image_features.patches.SetShared(&shared.reference_frames);
+  JXL_RETURN_IF_ERROR(
+      ImportExperimentalReferenceFrames(experimental_reference_frames, &shared));
   const FrameDimensions& frame_dim = shared.frame_dim;
   JXL_ASSIGN_OR_RETURN(
       shared.ac_strategy,
@@ -1655,6 +1782,15 @@ Status ComputeEncodingData(
 
   if (!enc_state.streaming_mode) {
     group_rect = Rect(color);
+  }
+
+  if (cparams.experimental_interframe_patch) {
+    JXL_RETURN_IF_ERROR(SaveExperimentalReferenceFrame(
+        memory_manager, metadata, frame_header, color, extra_channels,
+        experimental_reference_frames));
+    JXL_RETURN_IF_ERROR(
+        ApplyExperimentalInterframePatch(frame_info, frame_header, &shared,
+                                         &color));
   }
 
   if (frame_header.encoding == FrameEncoding::kVarDCT) {
@@ -1802,6 +1938,9 @@ bool CanDoStreamingEncoding(const CompressParams& cparams,
                             const FrameInfo& frame_info,
                             const CodecMetadata& metadata,
                             const JxlEncoderChunkedFrameAdapter& frame_data) {
+  if (cparams.experimental_interframe_patch) {
+    return false;
+  }
   if (cparams.buffering == -1) {
     if (cparams.speed_tier < SpeedTier::kTortoise) return false;
     if (cparams.speed_tier < SpeedTier::kSquirrel &&
@@ -2158,7 +2297,7 @@ JXL_NOINLINE Status EncodeFrameStreaming(
     JXL_RETURN_IF_ERROR(ComputeEncodingData(
         cparams, frame_info, metadata, frame_data, jpeg_data.get(), x0, y0,
         xsize, ysize, cms, pool, frame_header, *enc_modular, *enc_state,
-        &group_codes, aux_out));
+        &group_codes, aux_out, nullptr));
     JXL_ENSURE(enc_state->special_frames.empty());
     if (i == 0) {
       BitWriter writer{memory_manager};
@@ -2312,7 +2451,9 @@ Status EncodeFrameOneShot(JxlMemoryManager* memory_manager,
                           JxlEncoderChunkedFrameAdapter& frame_data,
                           const JxlCmsInterface& cms, ThreadPool* pool,
                           JxlEncoderOutputProcessorWrapper* output_processor,
-                          AuxOut* aux_out) {
+                          AuxOut* aux_out,
+                          std::array<ReferenceFrame, 4>*
+                              experimental_reference_frames) {
   auto enc_state = jxl::make_unique<PassesEncoderState>(memory_manager);
   SetProgressiveMode(cparams, &enc_state->progressive_splitter);
   FrameHeader frame_header(metadata);
@@ -2333,7 +2474,7 @@ Status EncodeFrameOneShot(JxlMemoryManager* memory_manager,
   JXL_RETURN_IF_ERROR(ComputeEncodingData(
       cparams, frame_info, metadata, frame_data, jpeg_data.get(), 0, 0,
       frame_data.xsize, frame_data.ysize, cms, pool, frame_header, *enc_modular,
-      *enc_state, &group_codes, aux_out));
+      *enc_state, &group_codes, aux_out, experimental_reference_frames));
 
   BitWriter writer{memory_manager};
   JXL_RETURN_IF_ERROR(writer.AppendByteAligned(enc_state->special_frames));
@@ -2562,7 +2703,9 @@ Status EncodeFrame(JxlMemoryManager* memory_manager,
                    JxlEncoderChunkedFrameAdapter& frame_data,
                    const JxlCmsInterface& cms, ThreadPool* pool,
                    JxlEncoderOutputProcessorWrapper* output_processor,
-                   AuxOut* aux_out, uint32_t* jxlp_counter) {
+                   AuxOut* aux_out, uint32_t* jxlp_counter,
+                   std::array<ReferenceFrame, 4>*
+                       experimental_reference_frames) {
   CompressParams cparams = cparams_orig;
   if (cparams.speed_tier == SpeedTier::kTectonicPlate &&
       !cparams.IsLossless()) {
@@ -2573,7 +2716,8 @@ Status EncodeFrame(JxlMemoryManager* memory_manager,
   if (cparams.speed_tier == SpeedTier::kLightning) {
     cparams.speed_tier = SpeedTier::kThunder;
   }
-  if (cparams.speed_tier == SpeedTier::kTectonicPlate) {
+  if (cparams.speed_tier == SpeedTier::kTectonicPlate &&
+      !cparams.experimental_interframe_patch) {
     // Test palette performance to inform later trials.
     std::vector<CompressParams> all_params;
     CompressParams cparams_attempt = cparams;
@@ -2644,6 +2788,20 @@ Status EncodeFrame(JxlMemoryManager* memory_manager,
 
   JXL_RETURN_IF_ERROR(ParamsPostInit(&cparams));
 
+  if (cparams.experimental_interframe_patch) {
+    if (!cparams.IsLossless() ||
+        cparams.color_transform != ColorTransform::kNone) {
+      return JXL_FAILURE(
+          "experimental interframe patch requires lossless modular "
+          "color_transform=None");
+    }
+    if (cparams.resampling != 1 || cparams.ec_resampling != 1) {
+      return JXL_FAILURE(
+          "experimental interframe patch does not support resampling");
+    }
+    cparams.patches = Override::kOff;
+  }
+
   if (cparams.butteraugli_distance < 0) {
     return JXL_FAILURE("Expected non-negative distance");
   }
@@ -2706,7 +2864,8 @@ Status EncodeFrame(JxlMemoryManager* memory_manager,
           output_processor->Seek(output_processor->CurrentPosition() + 12));
     }
     return EncodeFrameOneShot(memory_manager, cparams, frame_info, metadata,
-                              frame_data, cms, pool, output_processor, aux_out);
+                              frame_data, cms, pool, output_processor, aux_out,
+                              experimental_reference_frames);
   }
 }
 

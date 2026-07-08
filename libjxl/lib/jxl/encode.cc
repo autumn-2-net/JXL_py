@@ -1057,12 +1057,28 @@ jxl::Status JxlEncoder::ProcessOneEnqueuedInput() {
       frame_info.timecode = timecode;
       frame_info.name = input_frame->option_values.frame_name;
       jxl::CompressParams frame_cparams = input_frame->option_values.cparams;
+      if (frame_cparams.experimental_interframe_patch) {
+        if (input_frame->option_values.header.layer_info.have_crop) {
+          return JXL_API_ERROR(
+              this, JXL_ENC_ERR_API_USAGE,
+              "experimental interframe patch does not support cropped frames");
+        }
+        if (frame_info.blendmode != jxl::BlendMode::kReplace) {
+          return JXL_API_ERROR(
+              this, JXL_ENC_ERR_API_USAGE,
+              "experimental interframe patch requires replace blend mode");
+        }
+        frame_info.save_before_color_transform = save_as_reference != 0;
+      }
       frame_cparams.output_mode = output_mode;
       uint32_t jxlp_ctr = static_cast<uint32_t>(jxlp_counter);
       if (!jxl::EncodeFrame(&memory_manager, frame_cparams, frame_info,
                             &metadata, input_frame->frame_data, cms,
                             thread_pool.get(), &output_processor,
-                            input_frame->option_values.aux_out, &jxlp_ctr)) {
+                            input_frame->option_values.aux_out, &jxlp_ctr,
+                            frame_cparams.experimental_interframe_patch
+                                ? &experimental_patch_reference_frames
+                                : nullptr)) {
         return JXL_API_ERROR(this, JXL_ENC_ERR_GENERIC,
                              "Failed to encode frame");
       }
@@ -1921,6 +1937,14 @@ JxlEncoderStatus JxlEncoderFrameSettingsSetOption(
       }
       frame_settings->values.cparams.output_mode = value;
       break;
+    case JXL_ENC_FRAME_SETTING_EXPERIMENTAL_INTERFRAME_PATCH:
+      if (value < 0 || value > 1) {
+        return JXL_API_ERROR(frame_settings->enc, JXL_ENC_ERR_NOT_SUPPORTED,
+                             "Option value has to be 0 or 1");
+      }
+      frame_settings->values.cparams.experimental_interframe_patch =
+          value == 1;
+      break;
 
     default:
       return JXL_API_ERROR(frame_settings->enc, JXL_ENC_ERR_NOT_SUPPORTED,
@@ -2057,6 +2081,10 @@ void JxlEncoderReset(JxlEncoder* enc) {
   enc->jxlp_counter = 0;
   enc->metadata = jxl::CodecMetadata();
   enc->last_used_cparams = jxl::CompressParams();
+  for (auto& ref : enc->experimental_patch_reference_frames) {
+    ref.frame.reset();
+    ref.ib_is_in_xyb = false;
+  }
   enc->frames_closed = false;
   enc->boxes_closed = false;
   enc->basic_info_set = false;

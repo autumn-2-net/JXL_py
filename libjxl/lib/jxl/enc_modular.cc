@@ -709,7 +709,8 @@ Status ModularFrameEncoder::ComputeEncodingData(
 
   if (do_color && metadata.bit_depth.bits_per_sample <= 16 &&
       cparams_.speed_tier < SpeedTier::kCheetah &&
-      cparams_.decoding_speed_tier < 2 && !groupwise) {
+      cparams_.decoding_speed_tier < 2 && !groupwise &&
+      !cparams_.experimental_interframe_patch) {
     JXL_RETURN_IF_ERROR(FindBestPatchDictionary(
         *color, enc_state, cms, nullptr, aux_out,
         cparams_.color_transform == ColorTransform::kXYB));

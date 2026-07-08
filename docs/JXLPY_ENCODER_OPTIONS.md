@@ -257,7 +257,7 @@ Supported analysis options:
 
 | Python option | Meaning |
 |---|---|
-| `reference` | Crop/replace analysis modes: `auto`, `first`, `previous`, `none`, `full`. The experimental `blend_mask` and `add` encoder paths are not modeled by the analyzer. |
+| `reference` | Crop/replace analysis modes: `auto`, `first`, `previous`, `none`, `full`. The experimental `blend_mask`, `add`, and `patch_add` encoder paths are not modeled by the analyzer. |
 | `min_crop_ratio` | Same crop cutoff as encoding. |
 | `extra_channels` | Optional extra channel planes; changes are included in the diff bbox. |
 

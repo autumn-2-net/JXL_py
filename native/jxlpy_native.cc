@@ -189,6 +189,7 @@ jxlpy_encode_options NormalizeOptions(const jxlpy_encode_options* options) {
   out.modular_lossy_palette = -1;
   out.modular_channel_colors_global_percent = -1.0f;
   out.modular_channel_colors_group_percent = -1.0f;
+  out.experimental_interframe_patch = 0;
   if (options != nullptr) out = *options;
   if (out.tps_numerator == 0) out.tps_numerator = 1000;
   if (out.tps_denominator == 0) out.tps_denominator = 1;
@@ -328,6 +329,9 @@ jxl::extras::JXLCompressParams MakeCompressParams(
   }
   if (options.disable_perceptual_optimizations) {
     params.AddOption(JXL_ENC_FRAME_SETTING_DISABLE_PERCEPTUAL_HEURISTICS, 1);
+  }
+  if (options.experimental_interframe_patch) {
+    params.AddOption(JXL_ENC_FRAME_SETTING_EXPERIMENTAL_INTERFRAME_PATCH, 1);
   }
   AddExtraEncoderSettings(&params, options);
   return params;
@@ -535,7 +539,7 @@ uint32_t DefaultDecodeDtype(const JxlBasicInfo& info) {
 
 extern "C" {
 
-const char* jxlpy_version(void) { return "jxlpy_native/0.1"; }
+const char* jxlpy_version(void) { return "jxlpy_native/0.2-patch-add"; }
 
 int jxlpy_supports_frame_settings_passthrough(void) { return 1; }
 

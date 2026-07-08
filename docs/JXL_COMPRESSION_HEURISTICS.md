@@ -334,6 +334,27 @@ reconstruction. Use `--include-add` to also try the ADD residual path,
 `--skip-synthetic` to only run the folder case, and `--limit N` to cap frame
 count.
 
+### Experimental Internal PatchDictionary ADD
+
+`jxlpy.encode_multiframe(..., reference="patch_add")` uses the patched libjxl
+encoder in this repository instead of the public `JXL_BLEND_ADD` path:
+
+- Python passes ordinary full-size `uint8`/`uint16` frames.
+- Frame 0 and later saved frames are marked as pre-color-transform references.
+- Later frames keep `JXL_BLEND_REPLACE` at the public layer level, but the
+  encoder injects tiled PatchDictionary entries with `PatchBlendMode::kAdd`
+  against reference `1`.
+- The encoder-side patch code subtracts the reference before modular encoding;
+  the decoder applies the patch to reconstruct `reference + residual`.
+- With extra channels, patch dimensions are kept 8-pixel aligned and the
+  right/bottom tail strips remain ordinary full pixels. This avoids a current
+  libjxl patch/extra-channel boundary failure while preserving exact restore.
+
+This is intentionally limited for the first experiment: lossless modular only,
+full-size frames only, no crop/multi-rectangle search, and color channels only
+use patch residuals. Alpha and other extra channels are still encoded as normal
+current-frame channels. The benchmark script prints this as `patch add`.
+
 ## Proposed Encoder Policy
 
 Pseudo-code:
