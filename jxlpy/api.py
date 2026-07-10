@@ -8,6 +8,13 @@ from typing import Any, Iterable
 import numpy as np
 
 from ._ffi import ffi, lib
+from .multiframe import (
+    analyze_frame_arrays as _analyze_frame_arrays,
+    changed_mask as _changed_mask,
+    diff_stats as _diff_stats,
+    diff_stats_from_mask as _diff_stats_from_mask,
+    select_reference_bbox as _select_reference_bbox,
+)
 
 
 _DTYPE_TO_NATIVE = {
@@ -51,15 +58,6 @@ _BLEND_MODE_TO_NATIVE = {
 class _NativeResult:
     data: bytes
     meta: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class _DiffStats:
-    bbox: tuple[int, int, int, int]
-    changed_pixels: int
-    changed_pct: float
-    bbox_area: int
-    bbox_pct: float
 
 
 def _read_bytes(src: Any) -> bytes:
@@ -477,92 +475,6 @@ def _extra_specs_to_frame_arrays(
             }
         )
     return channels
-
-
-def _diff_stats(
-    current: np.ndarray,
-    reference: np.ndarray,
-    current_extras: list[np.ndarray],
-    reference_extras: list[np.ndarray],
-) -> _DiffStats:
-    changed = _changed_mask(current, reference, current_extras, reference_extras)
-    return _diff_stats_from_mask(changed)
-
-
-def _changed_mask(
-    current: np.ndarray,
-    reference: np.ndarray,
-    current_extras: list[np.ndarray],
-    reference_extras: list[np.ndarray],
-) -> np.ndarray:
-    changed = np.any(current != reference, axis=2)
-    for cur_extra, ref_extra in zip(current_extras, reference_extras):
-        changed |= cur_extra != ref_extra
-    return changed
-
-
-def _diff_stats_from_mask(changed: np.ndarray) -> _DiffStats:
-    changed_count = int(np.count_nonzero(changed))
-    full_area = int(changed.shape[0] * changed.shape[1])
-    if changed_count == 0:
-        bbox = (0, 0, 1, 1)
-    else:
-        rows = np.flatnonzero(np.any(changed, axis=1))
-        cols = np.flatnonzero(np.any(changed, axis=0))
-        bbox = (
-            int(cols[0]),
-            int(rows[0]),
-            int(cols[-1]) + 1,
-            int(rows[-1]) + 1,
-        )
-    x0, y0, x1, y1 = bbox
-    bbox_area = int((x1 - x0) * (y1 - y0))
-    return _DiffStats(
-        bbox=bbox,
-        changed_pixels=changed_count,
-        changed_pct=changed_count / full_area * 100.0 if full_area else 0.0,
-        bbox_area=bbox_area,
-        bbox_pct=bbox_area / full_area * 100.0 if full_area else 0.0,
-    )
-
-
-def _select_reference_bbox(
-    *,
-    index: int,
-    current: np.ndarray,
-    arrays: list[np.ndarray],
-    current_extras: list[np.ndarray],
-    extra_specs: list[dict[str, Any]],
-    refs: dict[int, tuple[np.ndarray, list[np.ndarray]]],
-    reference: str,
-) -> tuple[int, _DiffStats, str]:
-    candidates: list[tuple[int, _DiffStats, str]] = []
-    if reference in ("previous", "auto") and 1 in refs:
-        ref_main, ref_extras = refs[1]
-        candidates.append((
-            1,
-            _diff_stats(current, ref_main, current_extras, ref_extras),
-            "previous",
-        ))
-    if reference in ("first", "auto") and 2 in refs:
-        ref_main, ref_extras = refs[2]
-        candidates.append((
-            2,
-            _diff_stats(current, ref_main, current_extras, ref_extras),
-            "first",
-        ))
-    if not candidates:
-        previous_extras = [spec["arrays"][index - 1] for spec in extra_specs]
-        candidates.append((
-            1,
-            _diff_stats(current, arrays[index - 1], current_extras, previous_extras),
-            "previous",
-        ))
-
-    return min(
-        candidates,
-        key=lambda item: (item[1].bbox_area, item[1].changed_pixels),
-    )
 
 
 def _options(
@@ -1662,172 +1574,18 @@ def analyze_multiframe(
     reference: str = "auto",
     min_crop_ratio: float = 0.98,
 ) -> dict[str, Any]:
-    """Analyze a frame sequence and report whether multiframe encoding is beneficial.
-
-    The reference and crop decisions mirror encode_multiframe.
-    """
-    if reference not in ("auto", "first", "previous", "none", "full"):
-        raise ValueError("reference must be 'auto', 'first', 'previous', 'none' or 'full'")
+    """Analyze frames using the same exact reference/crop policy as encoding."""
     arrays = _frame_arrays(frames, layout=layout)
-    h, w, channels = arrays[0].shape
-    full_area = w * h
+    h, w, _ = arrays[0].shape
     extra_specs = _extra_specs_to_frame_arrays(
         extra_channels,
         frame_count=len(arrays),
         expected_hw=(h, w),
         layout=layout,
     )
-    frame_stats = []
-    refs: dict[int, tuple[np.ndarray, list[np.ndarray]]] = {}
-
-    for i, arr in enumerate(arrays):
-        full_extras = [spec["arrays"][i] for spec in extra_specs]
-        source_ref = 0
-        source_name = "none"
-        save_ref = 0
-        use_crop = False
-        x0 = y0 = 0
-        x1 = w
-        y1 = h
-
-        if i == 0:
-            if reference in ("auto", "first") and len(arrays) > 1:
-                save_ref = 2
-            elif reference == "previous" and len(arrays) > 1:
-                save_ref = 1
-            frame_stats.append({
-                "index": 0,
-                "source_ref": source_ref,
-                "source": source_name,
-                "save_as_ref": save_ref,
-                "use_crop": False,
-                "bbox_x0": 0,
-                "bbox_y0": 0,
-                "bbox_x1": w,
-                "bbox_y1": h,
-                "bbox_xsize": w,
-                "bbox_ysize": h,
-                "crop_x0": 0,
-                "crop_y0": 0,
-                "crop_x1": w,
-                "crop_y1": h,
-                "crop_xsize": w,
-                "crop_ysize": h,
-                "changed_pixels": full_area,
-                "changed_pct": 100.0,
-                "bbox_area": full_area,
-                "bbox_pct": 100.0,
-                "encoded_area": full_area,
-                "encoded_pct": 100.0,
-            })
-            if save_ref:
-                refs[save_ref] = (arr, full_extras)
-            continue
-
-        if reference in ("none", "full"):
-            diff = _diff_stats(
-                arr, arrays[i - 1], full_extras,
-                [spec["arrays"][i - 1] for spec in extra_specs],
-            )
-            frame_stats.append({
-                "index": i,
-                "source_ref": 0,
-                "source": "none",
-                "save_as_ref": 0,
-                "use_crop": False,
-                "bbox_x0": 0,
-                "bbox_y0": 0,
-                "bbox_x1": w,
-                "bbox_y1": h,
-                "bbox_xsize": w,
-                "bbox_ysize": h,
-                "crop_x0": 0,
-                "crop_y0": 0,
-                "crop_x1": w,
-                "crop_y1": h,
-                "crop_xsize": w,
-                "crop_ysize": h,
-                "changed_pixels": diff.changed_pixels,
-                "changed_pct": diff.changed_pct,
-                "bbox_area": full_area,
-                "bbox_pct": 100.0,
-                "encoded_area": full_area,
-                "encoded_pct": 100.0,
-            })
-            continue
-
-        source_ref, diff, source_name = _select_reference_bbox(
-            index=i,
-            current=arr,
-            arrays=arrays,
-            current_extras=full_extras,
-            extra_specs=extra_specs,
-            refs=refs,
-            reference=reference,
-        )
-        bbox_x0, bbox_y0, bbox_x1, bbox_y1 = diff.bbox
-        x0, y0, x1, y1 = diff.bbox
-        if diff.bbox_area < full_area * float(min_crop_ratio):
-            use_crop = True
-        else:
-            source_ref = 0
-            source_name = "none"
-            x0 = y0 = 0
-            x1 = w
-            y1 = h
-
-        if reference in ("previous", "auto"):
-            save_ref = 1
-
-        frame_stats.append({
-            "index": i,
-            "source_ref": source_ref,
-            "source": source_name,
-            "save_as_ref": save_ref,
-            "use_crop": use_crop,
-            "bbox_x0": bbox_x0,
-            "bbox_y0": bbox_y0,
-            "bbox_x1": bbox_x1,
-            "bbox_y1": bbox_y1,
-            "bbox_xsize": bbox_x1 - bbox_x0,
-            "bbox_ysize": bbox_y1 - bbox_y0,
-            "crop_x0": x0,
-            "crop_y0": y0,
-            "crop_x1": x1,
-            "crop_y1": y1,
-            "crop_xsize": x1 - x0,
-            "crop_ysize": y1 - y0,
-            "changed_pixels": diff.changed_pixels,
-            "changed_pct": diff.changed_pct,
-            "bbox_area": diff.bbox_area,
-            "bbox_pct": diff.bbox_pct,
-            "encoded_area": diff.bbox_area if use_crop else full_area,
-            "encoded_pct": (diff.bbox_area if use_crop else full_area) / full_area * 100.0,
-        })
-        if save_ref:
-            refs[save_ref] = (arr, full_extras)
-
-    avg_bbox_pct = np.mean([s["bbox_pct"] for s in frame_stats[1:]]) if len(frame_stats) > 1 else 100.0
-    avg_encoded_pct = np.mean([s["encoded_pct"] for s in frame_stats[1:]]) if len(frame_stats) > 1 else 100.0
-    avg_changed_pct = np.mean([s["changed_pct"] for s in frame_stats[1:]]) if len(frame_stats) > 1 else 100.0
-
-    if avg_encoded_pct < 30:
-        recommendation = "highly_beneficial"
-    elif avg_encoded_pct < 70:
-        recommendation = "moderately_beneficial"
-    else:
-        recommendation = "minimal_benefit"
-
-    return {
-        "num_frames": len(arrays),
-        "canvas_size": (w, h),
-        "channels": channels,
-        "dtype": arrays[0].dtype,
-        "reference": reference,
-        "min_crop_ratio": float(min_crop_ratio),
-        "avg_bbox_pct": float(avg_bbox_pct),
-        "avg_encoded_pct": float(avg_encoded_pct),
-        "avg_changed_pct": float(avg_changed_pct),
-        "recommendation": recommendation,
-        "frames": frame_stats,
-    }
+    return _analyze_frame_arrays(
+        arrays,
+        extra_specs=extra_specs,
+        reference=reference,
+        min_crop_ratio=min_crop_ratio,
+    )

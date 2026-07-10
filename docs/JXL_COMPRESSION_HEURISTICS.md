@@ -75,6 +75,37 @@ For exact RGBA processing, always include every channel in comparisons. Do not
 ignore RGB values behind `alpha=0`, because training/archive workflows may care
 about byte-exact invisible pixels.
 
+The runnable implementation now lives in `jxlpy.heuristics` rather than this
+document or the main API module:
+
+```python
+import jxlpy
+
+metrics = jxlpy.analyze_image("content.png")
+plan = jxlpy.recommend_lossless_candidates(
+    metrics,
+    source_format=".png",
+    mode="archive",
+)
+
+for candidate in plan.candidates:
+    print(candidate.name, candidate.kwargs)
+```
+
+The default archive policy always includes plain lossless effort 9. Statistical
+rules only add extra candidates for the uncommon flat/document/screenshot
+profiles where patches or the document modular preset may beat default e9.
+
+Analyze files or a directory without encoding candidates:
+
+```powershell
+C:\Users\autumn\.conda\envs\py10\python.exe -B scripts\analyze_jxl.py test_img --mode archive
+```
+
+Use `--json` for machine-readable output and `--jpeg-pixels` when JPEG
+bit-exact reconstruction is not required and pixel-lossless candidates should
+be considered.
+
 Reference metric code:
 
 ```python
@@ -259,6 +290,24 @@ Diff crop rules:
 This is separate from libjxl patches. Current libjxl does not aggressively
 optimize inter-frame differences automatically, so the wrapper should own this
 logic when exact multi-frame compression matters.
+
+The pure diff/reference logic now lives in `jxlpy.multiframe`; `jxlpy.api`
+contains only the public encode wrapper and native buffer construction. Analyze
+a frame directory without encoding:
+
+```powershell
+C:\Users\autumn\.conda\envs\py10\python.exe -B scripts\analyze_multiframe.py test_img\mt_lay\t1 --reference auto
+```
+
+Compare `auto`, `previous`, `first`, and `full` by estimated encoded pixel area:
+
+```powershell
+C:\Users\autumn\.conda\envs\py10\python.exe -B scripts\analyze_multiframe.py test_img\mt_lay\t1 --compare-references
+```
+
+This is a preflight estimate, not a substitute for final byte-size comparison.
+It is useful for rejecting obviously bad full-frame/reference policies before
+running expensive effort-9 encodes.
 
 ### Experimental Masked BLEND
 

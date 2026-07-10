@@ -11,9 +11,25 @@ from .api import (
     info,
     reconstruct_jpeg,
 )
+from .heuristics import (
+    CompressionRecommendation,
+    EncoderCandidate,
+    ImageMetrics,
+    analyze_image,
+    analyze_pixels,
+    is_document_candidate,
+    is_patch_candidate,
+    is_simple_jpeg_candidate,
+    recommend_lossless_candidates,
+)
+from .multiframe import DiffStats, compare_reference_modes
 
 __all__ = [
     "analyze_multiframe",
+    "analyze_image",
+    "analyze_pixels",
+    "CompressionRecommendation",
+    "compare_reference_modes",
     "convert",
     "decode",
     "decode_extra_channel",
@@ -22,6 +38,13 @@ __all__ = [
     "decode_to_png",
     "encode",
     "encode_multiframe",
+    "EncoderCandidate",
+    "DiffStats",
+    "ImageMetrics",
     "info",
+    "is_document_candidate",
+    "is_patch_candidate",
+    "is_simple_jpeg_candidate",
+    "recommend_lossless_candidates",
     "reconstruct_jpeg",
 ]
