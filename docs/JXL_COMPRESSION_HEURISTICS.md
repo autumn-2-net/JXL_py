@@ -215,12 +215,14 @@ Use the screenshot modular preset when any of these profiles match:
 
 - white-background document: `near_white_pct > 50`, `entropy_gray < 4.5`, and
   either `flat4_pct > 40` or `unique_per_mpx < 10,000`
-- large flat UI regions: `flat4_pct > 70` and `entropy_gray < 4.5`
+- large flat UI regions: `flat4_pct > 70`, `entropy_gray < 4.5`, and
+  `unique_per_mpx < 10,000`
 - very simple low-color UI: `flat4_pct > 35`, `entropy_gray < 2.5`, and
   `unique_per_mpx < 10,000`
 
-The second rule is important for dark terminal/UI screenshots and PDF viewers
-that are not predominantly white.
+The second rule is important for dark terminal/UI screenshots that are not
+predominantly white. Its color-count guard excludes PDF viewers containing
+scaled antialiased pages, charts, or embedded photographs.
 
 Measured exact-RGBA results for the preset:
 
@@ -233,8 +235,9 @@ Measured exact-RGBA results for the preset:
 | `image.png` | 133,369 | 362,093 | 425,118 | 2.412s |
 
 All five preset outputs decoded byte-exactly to their source pixels. The
-`1eb7` result shows why this remains an archive candidate rather than a default
-interactive preset.
+`1eb7` row is retained as an ablation result: its 76,007 full-image colors and
+roughly 27,426 sampled colors/MP now fail the screenshot color-count guard, so
+the API returns plain e9 instead of paying the 136-second search cost.
 
 ## Patch Decision
 
@@ -510,7 +513,11 @@ Current helper predicates:
 is_simple_screenshot_candidate(m):
     return (
         is_document_candidate(m)
-        or (m.flat4_pct > 70 and m.entropy_gray < 4.5)
+        or (
+            m.flat4_pct > 70
+            and m.entropy_gray < 4.5
+            and m.unique_per_mpx < 10000
+        )
         or (
             m.flat4_pct > 35
             and m.entropy_gray < 2.5
@@ -541,7 +548,11 @@ Runnable Python version:
 def is_simple_screenshot_candidate(m: ImageMetrics) -> bool:
     return (
         is_document_candidate(m)
-        or (m.flat4_pct > 70.0 and m.entropy_gray < 4.5)
+        or (
+            m.flat4_pct > 70.0
+            and m.entropy_gray < 4.5
+            and m.unique_per_mpx < 10000.0
+        )
         or (
             m.flat4_pct > 35.0
             and m.entropy_gray < 2.5

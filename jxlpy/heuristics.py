@@ -201,6 +201,7 @@ def is_simple_screenshot_candidate(metrics: ImageMetrics) -> bool:
         or (
             metrics.flat4_pct > 70.0
             and metrics.entropy_gray < 4.5
+            and metrics.unique_per_mpx < 10_000.0
         )
         or (
             metrics.flat4_pct > 35.0

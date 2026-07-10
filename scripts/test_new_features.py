@@ -208,6 +208,14 @@ def test_screenshot_heuristic():
     if general.recommendation.profile != "general":
         raise AssertionError("high-entropy raster was misclassified as a screenshot")
 
+    viewer = np.full((256, 384, 3), 32, dtype=np.uint8)
+    viewer[48:208, 128:256] = rng.integers(
+        0, 256, (160, 128, 3), dtype=np.uint8
+    )
+    mixed = jxlpy.analyze_lossless(viewer, source_format="png")
+    if mixed.recommendation.profile != "general":
+        raise AssertionError("flat viewer chrome hid high-color embedded content")
+
     print("  candidates:", ", ".join(names))
     print("  RESULT: PASS")
     print()
