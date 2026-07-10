@@ -20,9 +20,17 @@ cjxl input.jpg output.jxl --lossless_jpeg=1 -e 8
 - JPEG transcode preserves the original JPEG bitstream. Pixel lossless does not.
 - `--patches=1` has no observed effect on JPEG lossless transcode outputs.
 - Do not rely on encoder patch auto-detection. In tested screenshot/text cases,
-  auto was bit-identical to `--patches=0`, while forced `--patches=1` was smaller.
-- Forced patches can be 3x to 15x slower. Only force them when the image looks
-  structurally simple enough.
+  auto was bit-identical to `--patches=0`.
+- For PDF, browser, terminal, and other simple screenshots, prefer testing this
+  archive preset before forced patches:
+
+```bash
+cjxl content.png content.jxl -d 0 -e 9 -g 3 -I 100 -P 0 \
+  --modular_palette_colors=10000 --patches 0 -Y 0
+```
+
+- Forced patches remain a fallback for flat/repeated structures not selected as
+  simple screenshots. They can be 3x to 15x slower than default encoding.
 
 ## Why PNG Can Win
 
@@ -47,8 +55,9 @@ Interpretation:
 - This does not look like a JXL decode bug.
 - The original PNG was probably saved with better PNG filtering/optimization
   than Pillow's default encoder can reproduce.
-- JXL without patches can be bad on document-like screenshots.
-- Forced patches are useful here, but the CPU cost is high.
+- Default JXL can be bad on document-like screenshots.
+- Forced patches improve this historical result, but the screenshot modular
+  preset measured later is substantially smaller.
 
 The likely reason is not semantic text information. PNG generally compresses
 pixels, not OCR/text structure. A document screenshot benefits because the pixel
@@ -81,20 +90,24 @@ document or the main API module:
 ```python
 import jxlpy
 
-metrics = jxlpy.analyze_image("content.png")
-plan = jxlpy.recommend_lossless_candidates(
-    metrics,
-    source_format=".png",
+analysis = jxlpy.analyze_lossless(
+    "content.png",
     mode="archive",
 )
 
-for candidate in plan.candidates:
+print(analysis.metrics)
+for candidate in analysis.recommendation.candidates:
     print(candidate.name, candidate.kwargs)
 ```
 
-The default archive policy always includes plain lossless effort 9. Statistical
-rules only add extra candidates for the uncommon flat/document/screenshot
-profiles where patches or the document modular preset may beat default e9.
+For custom policies, call `analyze_image()` or `analyze_pixels()` first and
+pass the returned metrics to `recommend_lossless_candidates()` yourself.
+
+The default archive policy always includes plain lossless effort 9. For a
+high-confidence simple screenshot, the API puts `screenshot_modular_e9` first
+and keeps default e9 as a fallback. The preset maps exactly to `-g 3 -I 100
+-P 0 --modular_palette_colors=10000 --patches 0 -Y 0`. It is intended for
+archive-size searches and can be dramatically slower on some inputs.
 
 Analyze files or a directory without encoding candidates:
 
@@ -196,14 +209,43 @@ For exact encode/decode validation, do not use this Pillow conversion as the
 only source of truth. Use the wrapper/native decoder and compare the original
 raw channels, especially when hidden RGB behind alpha matters.
 
+## Screenshot Decision
+
+Use the screenshot modular preset when any of these profiles match:
+
+- white-background document: `near_white_pct > 50`, `entropy_gray < 4.5`, and
+  either `flat4_pct > 40` or `unique_per_mpx < 10,000`
+- large flat UI regions: `flat4_pct > 70` and `entropy_gray < 4.5`
+- very simple low-color UI: `flat4_pct > 35`, `entropy_gray < 2.5`, and
+  `unique_per_mpx < 10,000`
+
+The second rule is important for dark terminal/UI screenshots and PDF viewers
+that are not predominantly white.
+
+Measured exact-RGBA results for the preset:
+
+| Sample | Screenshot preset | Previous patch e9 | Default e9 | Preset time |
+|---|---:|---:|---:|---:|
+| `1eb7...png` | 413,387 | 450,992 | 469,579 | 135.978s |
+| `3dd5...png` | 80,567 | 108,465 | 131,375 | 2.485s |
+| `7dba...png` | 8,931 | 11,609 | 14,136 | 1.531s |
+| `9bde...png` | 147,395 | 284,799 | 432,908 | 2.885s |
+| `image.png` | 133,369 | 362,093 | 425,118 | 2.412s |
+
+All five preset outputs decoded byte-exactly to their source pixels. The
+`1eb7` result shows why this remains an archive candidate rather than a default
+interactive preset.
+
 ## Patch Decision
 
-Use forced patches for lossless raster images when at least one of these is true:
+Trial forced patches only for non-screenshot lossless raster candidates:
 
-- `entropy_gray < 3.0`
-- `unique_per_mpx < 5,000`
-- `flat4_pct > 50`
-- `near_white_pct > 50`
+- `entropy_gray < 2.0` and `unique_per_mpx < 5,000`
+- or `flat4_pct > 70` and `unique_per_mpx < 2,000`
+
+Do not use `flat4_pct > 50` alone. PDF viewers and browser screenshots can
+contain large flat chrome/background areas while patches save only a few
+percent at a large CPU cost.
 
 Use the normal no-patch path when the image looks natural or illustration-like:
 
@@ -218,17 +260,17 @@ Current command choices:
 # Fast/practical lossless
 cjxl input.png output.jxl -d 0 -e 8 --patches=0
 
-# Archive/document/text/screenshot lossless
-cjxl input.png output.jxl -d 0 -e 8 --patches=1
+# Archive PDF/document/UI screenshot lossless, potentially very slow
+cjxl input.png output.jxl -d 0 -e 9 -g 3 -I 100 -P 0 \
+  --modular_palette_colors=10000 --patches 0 -Y 0
 
-# Maximum size pressure, slow
+# Non-screenshot flat/repeated-content fallback
 cjxl input.png output.jxl -d 0 -e 9 --patches=1
 ```
 
-If build time is acceptable and the image matches the patch candidate rules, the
-most reliable size policy is to encode both `--patches=0` and `--patches=1`, then
-keep the smaller output. If build time is not acceptable, only force patches for
-document/text/screenshot-like images.
+For a detected simple screenshot, compare the screenshot preset with plain e9
+and keep the smaller output. For other images matching the narrower patch rules,
+compare forced patches with the plain encode instead.
 
 ## JPEG Decision
 
@@ -399,18 +441,19 @@ metrics = analyze_pixels(pixels)
 if input is JPEG and not exact_jpeg_required:
     if is_simple_jpeg_candidate(metrics):
         encode JPEG transcode e8
-        encode pixel-lossless e8, maybe with patches if document-like
+        encode pixel-lossless e8
+        if is_simple_screenshot_candidate(metrics) and archive_or_best_size:
+            encode screenshot modular preset e9
         keep smaller
     else:
         encode JPEG transcode e8
     return
 
 if lossless raster:
-    if is_patch_candidate(metrics):
-        if archive_or_best_size:
-            encode e8 patches=0 and e8 patches=1, keep smaller
-        else:
-            encode e8 patches=1
+    if is_simple_screenshot_candidate(metrics) and archive_or_best_size:
+        encode screenshot modular preset e9 and plain e9, keep smaller
+    elif is_patch_candidate(metrics):
+        encode plain and forced-patch candidates, keep smaller
     else:
         encode e8 patches=0
     return
@@ -464,12 +507,21 @@ mode.
 Current helper predicates:
 
 ```text
+is_simple_screenshot_candidate(m):
+    return (
+        is_document_candidate(m)
+        or (m.flat4_pct > 70 and m.entropy_gray < 4.5)
+        or (
+            m.flat4_pct > 35
+            and m.entropy_gray < 2.5
+            and m.unique_per_mpx < 10000
+        )
+    )
+
 is_patch_candidate(m):
     return (
-        m.entropy_gray < 3.0
-        or m.unique_per_mpx < 5000
-        or m.flat4_pct > 50
-        or m.near_white_pct > 50
+        (m.entropy_gray < 2.0 and m.unique_per_mpx < 5000)
+        or (m.flat4_pct > 70 and m.unique_per_mpx < 2000)
     )
 
 is_simple_jpeg_candidate(m):
@@ -486,12 +538,22 @@ is_simple_jpeg_candidate(m):
 Runnable Python version:
 
 ```python
+def is_simple_screenshot_candidate(m: ImageMetrics) -> bool:
+    return (
+        is_document_candidate(m)
+        or (m.flat4_pct > 70.0 and m.entropy_gray < 4.5)
+        or (
+            m.flat4_pct > 35.0
+            and m.entropy_gray < 2.5
+            and m.unique_per_mpx < 10000.0
+        )
+    )
+
+
 def is_patch_candidate(m: ImageMetrics) -> bool:
     return (
-        m.entropy_gray < 3.0
-        or m.unique_per_mpx < 5000
-        or m.flat4_pct > 50.0
-        or m.near_white_pct > 50.0
+        (m.entropy_gray < 2.0 and m.unique_per_mpx < 5000)
+        or (m.flat4_pct > 70.0 and m.unique_per_mpx < 2000)
     )
 
 
@@ -621,7 +683,7 @@ Main results:
 | Sample | Original PNG | PIL level9 opt | JXL e9 p0 | JXL e9 p1 | Interpretation |
 |---|---:|---:|---:|---:|---|
 | `1eb7...png` | 591,394 | 552,363 | 469,579 | 450,992 | new paper screenshot; JXL p0 already wins, patch gain is small but slow |
-| `9bde...png` | 323,776 | 360,945 | 432,908 | 284,799 | old paper screenshot; PNG beats JXL p0, forced patches are needed |
+| `9bde...png` | 323,776 | 360,945 | 432,908 | 284,799 | historical patch result; screenshot preset later reached 147,395 |
 | `3dd5...png` | 208,958 | 312,928 | 131,375 | 108,465 | UI screenshot; JXL wins, patches help |
 | `7dba...png` | 40,671 | 54,060 | 14,136 | 11,609 | text screenshot; JXL wins strongly, patches help |
 | `image.png` | 366,447 | not retested | 425,118 | 362,093 | dense paper text; PNG is extremely competitive, p0 loses |
@@ -636,8 +698,9 @@ Timing highlights:
 - `7dba...png`: PIL opt `0.077s`, JXL e9 p0 `0.651s`, JXL e9 p1 `0.405s`.
 - `image.png`: JXL e9 p0 `0.660s`, JXL e9 p1 `8.162s`.
 
-This supports the current policy: do not force patches for every PNG, but do
-force or at least trial-run patches for document/text/screenshot archive mode.
+These historical patch measurements explain the earlier policy. The later
+screenshot-preset results supersede it for detected PDF/document/UI screenshots;
+forced patches are now only a fallback for non-screenshot flat content.
 
 ### PNG Chunk And Alpha Check
 
@@ -672,12 +735,12 @@ RGB conversion probe:
 
 So the old paper screenshot is likely a real no-patch JXL lossless weak case:
 PNG row filters plus Deflate match repeated low-color text/white-background
-bytes better than JXL's default no-patch lossless path. Forced patches change
-the result enough to beat the original PNG.
+bytes better than JXL's default no-patch lossless path. The later screenshot
+modular preset handles this case much better than either default or patches.
 
 `image.png` strengthens this point. It has `entropy_gray=1.560`,
 `unique_per_mpx=2534.9`, `flat4_pct=72.67`, `near_white_pct=86.04`, and an
-all-255 alpha channel. Even with those patch-friendly metrics, JXL e9 p0 is
-larger than the original PNG and JXL e9 p1 only barely beats the exact RGBA PNG.
-If visual equivalence is enough and the opaque alpha channel can be dropped, an
-optimized RGB PNG is smaller than JXL for this sample.
+all-255 alpha channel. Default e9 and patch e9 were weak, but the exact-RGBA
+screenshot preset reached 133,369 bytes. This supersedes the older conclusion
+that dropping alpha and keeping an optimized RGB PNG was the smallest known
+choice for this sample.

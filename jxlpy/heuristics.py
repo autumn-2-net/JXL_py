@@ -54,6 +54,20 @@ class CompressionRecommendation:
         }
 
 
+@dataclass(frozen=True)
+class CompressionAnalysis:
+    source_format: str
+    metrics: ImageMetrics
+    recommendation: CompressionRecommendation
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_format": self.source_format,
+            "metrics": self.metrics.to_dict(),
+            "recommendation": self.recommendation.to_dict(),
+        }
+
+
 def analyze_pixels(
     pixels: Any,
     *,
@@ -139,6 +153,39 @@ def analyze_image(
     )
 
 
+def analyze_lossless(
+    source: Any,
+    *,
+    source_format: str | None = None,
+    mode: str = "archive",
+    exact_jpeg: bool = True,
+    layout: str = "auto",
+    max_sample_pixels: int = 1_000_000,
+) -> CompressionAnalysis:
+    """Analyze an input and return metrics plus a small lossless candidate plan."""
+    if source_format is None:
+        if isinstance(source, (str, Path)):
+            source_format = Path(source).suffix
+        else:
+            source_format = ""
+    metrics = analyze_image(
+        source,
+        layout=layout,
+        max_sample_pixels=max_sample_pixels,
+    )
+    recommendation = recommend_lossless_candidates(
+        metrics,
+        source_format=source_format,
+        mode=mode,
+        exact_jpeg=exact_jpeg,
+    )
+    return CompressionAnalysis(
+        source_format=source_format.lower().lstrip("."),
+        metrics=metrics,
+        recommendation=recommendation,
+    )
+
+
 def is_document_candidate(metrics: ImageMetrics) -> bool:
     return (
         metrics.near_white_pct > 50.0
@@ -147,12 +194,32 @@ def is_document_candidate(metrics: ImageMetrics) -> bool:
     )
 
 
-def is_patch_candidate(metrics: ImageMetrics) -> bool:
+def is_simple_screenshot_candidate(metrics: ImageMetrics) -> bool:
+    """Detect simple UI, terminal, browser, and PDF/document screenshots."""
     return (
         is_document_candidate(metrics)
-        or metrics.entropy_gray < 3.0
-        or metrics.unique_per_mpx < 5_000.0
-        or metrics.flat4_pct > 50.0
+        or (
+            metrics.flat4_pct > 70.0
+            and metrics.entropy_gray < 4.5
+        )
+        or (
+            metrics.flat4_pct > 35.0
+            and metrics.entropy_gray < 2.5
+            and metrics.unique_per_mpx < 10_000.0
+        )
+    )
+
+
+def is_patch_candidate(metrics: ImageMetrics) -> bool:
+    return (
+        (
+            metrics.entropy_gray < 2.0
+            and metrics.unique_per_mpx < 5_000.0
+        )
+        or (
+            metrics.flat4_pct > 70.0
+            and metrics.unique_per_mpx < 2_000.0
+        )
     )
 
 
@@ -177,6 +244,7 @@ def recommend_lossless_candidates(
     effort = 9 if mode == "archive" else 8
     fmt = source_format.lower().lstrip(".")
     is_jpeg = fmt in ("jpg", "jpeg")
+    is_screenshot = is_simple_screenshot_candidate(metrics)
     reasons: list[str] = []
     candidates: list[EncoderCandidate] = []
 
@@ -191,18 +259,17 @@ def recommend_lossless_candidates(
         )
         return CompressionRecommendation("jpeg_transcode", tuple(candidates), tuple(reasons))
 
-    candidates.append(
-        EncoderCandidate(
-            name=f"default_e{effort}",
-            kwargs={
-                "lossless": True,
-                "distance": 0.0,
-                "effort": effort,
-                "patches": False,
-            },
-            reason="strong general lossless default",
-        )
+    default_candidate = EncoderCandidate(
+        name=f"default_e{effort}",
+        kwargs={
+            "lossless": True,
+            "distance": 0.0,
+            "effort": effort,
+            "patches": False,
+        },
+        reason="strong general lossless default",
     )
+    candidates.append(default_candidate)
 
     if is_jpeg:
         candidates.insert(
@@ -218,8 +285,32 @@ def recommend_lossless_candidates(
         else:
             return CompressionRecommendation("jpeg_photo", tuple(candidates[:1]), tuple(reasons))
 
-    if is_patch_candidate(metrics):
-        reasons.append("flat/low-color/document statistics justify a patch trial")
+    if is_screenshot:
+        if mode == "archive":
+            reasons.append("simple screenshot statistics justify the archive modular preset")
+            candidates.insert(
+                0,
+                EncoderCandidate(
+                    name="screenshot_modular_e9",
+                    kwargs={
+                        "lossless": True,
+                        "distance": 0.0,
+                        "effort": 9,
+                        "modular": 1,
+                        "modular_group_size": 3,
+                        "modular_predictor": 0,
+                        "modular_palette_colors": 10_000,
+                        "iterations": 100,
+                        "patches": False,
+                        "post_compact": 0,
+                    },
+                    reason="high-compression archive preset for simple screenshots",
+                ),
+            )
+        else:
+            reasons.append("simple screenshot detected; slow archive preset skipped")
+    elif is_patch_candidate(metrics):
+        reasons.append("flat/low-color statistics justify a patch trial")
         candidates.append(
             EncoderCandidate(
                 name=f"patch_e{effort}",
@@ -232,28 +323,8 @@ def recommend_lossless_candidates(
                 reason="trial candidate for repeated text or flat structures",
             )
         )
-    if is_document_candidate(metrics):
-        reasons.append("white-background document profile detected")
-        candidates.append(
-            EncoderCandidate(
-                name=f"document_modular_e{effort}",
-                kwargs={
-                    "lossless": True,
-                    "distance": 0.0,
-                    "effort": effort,
-                    "modular": 1,
-                    "modular_group_size": 3,
-                    "modular_predictor": 0,
-                    "modular_palette_colors": 10_000,
-                    "iterations": 100,
-                    "patches": False,
-                    "post_compact": 0,
-                },
-                reason="document/screenshot modular preset",
-            )
-        )
 
-    profile = "document" if is_document_candidate(metrics) else (
+    profile = "simple_screenshot" if is_screenshot else (
         "flat_or_palette" if is_patch_candidate(metrics) else "general"
     )
     return CompressionRecommendation(profile, tuple(candidates), tuple(reasons))
@@ -314,13 +385,16 @@ def _entropy_u8(values: np.ndarray) -> float:
 
 
 __all__ = [
+    "CompressionAnalysis",
     "CompressionRecommendation",
     "EncoderCandidate",
     "ImageMetrics",
     "analyze_image",
+    "analyze_lossless",
     "analyze_pixels",
     "is_document_candidate",
     "is_patch_candidate",
+    "is_simple_screenshot_candidate",
     "is_simple_jpeg_candidate",
     "recommend_lossless_candidates",
 ]

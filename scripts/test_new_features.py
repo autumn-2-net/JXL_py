@@ -164,6 +164,55 @@ def test_cjxl_modular_aliases():
     print()
 
 
+def test_screenshot_heuristic():
+    print("=== Screenshot Heuristic ===")
+
+    screenshot = np.full((256, 384, 4), 255, dtype=np.uint8)
+    screenshot[20:236:18, 32:352] = (24, 24, 24, 255)
+    screenshot[28:232:18, 32:220] = (128, 128, 128, 255)
+    analysis = jxlpy.analyze_lossless(screenshot, source_format="png")
+    names = [candidate.name for candidate in analysis.recommendation.candidates]
+    if analysis.recommendation.profile != "simple_screenshot":
+        raise AssertionError("simple screenshot profile was not detected")
+    if names != ["screenshot_modular_e9", "default_e9"]:
+        raise AssertionError(f"unexpected screenshot candidates: {names}")
+
+    preset = analysis.recommendation.candidates[0].kwargs
+    expected = {
+        "lossless": True,
+        "distance": 0.0,
+        "effort": 9,
+        "modular": 1,
+        "modular_group_size": 3,
+        "modular_predictor": 0,
+        "modular_palette_colors": 10_000,
+        "iterations": 100,
+        "patches": False,
+        "post_compact": 0,
+    }
+    if preset != expected:
+        raise AssertionError(f"unexpected screenshot preset: {preset}")
+
+    balanced = jxlpy.analyze_lossless(
+        screenshot, source_format="png", mode="balanced"
+    )
+    balanced_names = [
+        candidate.name for candidate in balanced.recommendation.candidates
+    ]
+    if balanced_names != ["default_e8"]:
+        raise AssertionError(f"unexpected balanced candidates: {balanced_names}")
+
+    rng = np.random.default_rng(1234)
+    photo_like = rng.integers(0, 256, (256, 384, 3), dtype=np.uint8)
+    general = jxlpy.analyze_lossless(photo_like, source_format="png")
+    if general.recommendation.profile != "general":
+        raise AssertionError("high-entropy raster was misclassified as a screenshot")
+
+    print("  candidates:", ", ".join(names))
+    print("  RESULT: PASS")
+    print()
+
+
 def test_frame_settings_passthrough():
     print("=== Raw Frame Settings Passthrough ===")
 
@@ -194,5 +243,6 @@ if __name__ == "__main__":
     test_analyze()
     test_analyze_auto_alignment()
     test_cjxl_modular_aliases()
+    test_screenshot_heuristic()
     test_frame_settings_passthrough()
     print("Done.")

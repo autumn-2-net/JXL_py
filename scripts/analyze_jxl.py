@@ -41,19 +41,17 @@ def main() -> None:
     args = parse_args()
     records = []
     for path in iter_images(args.inputs):
-        metrics = jxlpy.analyze_image(
-            path, max_sample_pixels=args.max_sample_pixels
-        )
-        recommendation = jxlpy.recommend_lossless_candidates(
-            metrics,
-            source_format=path.suffix,
+        analysis = jxlpy.analyze_lossless(
+            path,
             mode=args.mode,
             exact_jpeg=not args.jpeg_pixels,
+            max_sample_pixels=args.max_sample_pixels,
         )
+        metrics = analysis.metrics
+        recommendation = analysis.recommendation
         record = {
             "path": str(path),
-            "metrics": metrics.to_dict(),
-            "recommendation": recommendation.to_dict(),
+            **analysis.to_dict(),
         }
         records.append(record)
         if not args.json:

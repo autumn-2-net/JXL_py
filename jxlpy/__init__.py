@@ -12,13 +12,16 @@ from .api import (
     reconstruct_jpeg,
 )
 from .heuristics import (
+    CompressionAnalysis,
     CompressionRecommendation,
     EncoderCandidate,
     ImageMetrics,
     analyze_image,
+    analyze_lossless,
     analyze_pixels,
     is_document_candidate,
     is_patch_candidate,
+    is_simple_screenshot_candidate,
     is_simple_jpeg_candidate,
     recommend_lossless_candidates,
 )
@@ -27,8 +30,10 @@ from .multiframe import DiffStats, compare_reference_modes
 __all__ = [
     "analyze_multiframe",
     "analyze_image",
+    "analyze_lossless",
     "analyze_pixels",
     "CompressionRecommendation",
+    "CompressionAnalysis",
     "compare_reference_modes",
     "convert",
     "decode",
@@ -44,6 +49,7 @@ __all__ = [
     "info",
     "is_document_candidate",
     "is_patch_candidate",
+    "is_simple_screenshot_candidate",
     "is_simple_jpeg_candidate",
     "recommend_lossless_candidates",
     "reconstruct_jpeg",
