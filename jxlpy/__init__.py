@@ -27,8 +27,11 @@ from .heuristics import (
 )
 from .multiframe import DiffStats, compare_reference_modes
 
+__version__ = "0.2.0"
+
 __all__ = [
     "analyze_multiframe",
+    "__version__",
     "analyze_image",
     "analyze_lossless",
     "analyze_pixels",

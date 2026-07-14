@@ -45,6 +45,7 @@ out/build/windows-clang-cl-cli/libjxl/tools/
 +-- libjxl/                # Vendored libjxl source tree
 +-- native/                # C ABI shim loaded by CFFI
 +-- scripts/               # Build, smoke test, and benchmark helpers
++-- tests/                 # API/native ABI regression tests
 +-- test_img/              # Local image samples used for validation
 `-- out/                   # Generated build and test outputs, ignored by Git
 ```
@@ -116,10 +117,25 @@ For the Python native shim, use the helper script:
 .\scripts\build_windows.cmd jxlpy_native
 ```
 
+The Python loader validates native ABI version and structure sizes. Any change
+to `native/jxlpy_native.h` requires rebuilding `jxlpy_native`; stale binaries
+fail at import with an explicit rebuild message.
+
+Wheel builds are platform-tagged (`py3-none-win_amd64`,
+`py3-none-linux_x86_64`, and the corresponding macOS tag) because they contain
+a native library. Set `JXLPY_NATIVE_LIB` when more than one native build exists;
+the packager refuses to guess between architectures.
+
 Then run the smoke test with the known conda environment:
 
 ```bat
 .\scripts\smoke_jxlpy.cmd
+```
+
+Run the regression suite:
+
+```bat
+C:\Users\autumn\.conda\envs\py10\python.exe -B -m unittest discover -s tests -v
 ```
 
 Detailed Python wrapper notes are in:

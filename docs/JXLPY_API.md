@@ -69,9 +69,33 @@ frame2 = jxlpy.decode(jxl_bytes, frame=2, coalesced=True)
 `coalesced=True` returns the reconstructed full frame. Use `decode_layer` to
 inspect the stored crop/layer itself.
 
+Target-frame decoding stops immediately after the requested frame. For
+coalesced animation frames, libjxl's frame-skip API avoids producing pixel
+buffers for earlier frames while retaining any reference dependencies required
+by the codestream. Non-coalesced layers still require sequential dependency
+processing.
+
+```python
+frame, meta = jxlpy.decode(
+    jxl_bytes,
+    frame=20,
+    return_info=True,
+    threads=4,
+    max_pixels=100_000_000,
+    max_output_bytes=1_000_000_000,
+)
+```
+
+After an early stop, `meta["num_frames_known"]` is false and `num_frames` is
+the number reached so far. Pass `scan_all_frames=True` when an exact total is
+required, or call `jxlpy.info()` to scan frame headers without decoding pixels.
+
 ## Extra Channels
 
 Extra channels are non-color planes such as depth, masks, or heat maps.
+When `type` is omitted, jxlpy uses `optional`, the JXL type intended for
+application-defined planes. `unknown` may appear in decoder metadata but cannot
+be emitted by libjxl.
 
 ```python
 jxl = jxlpy.encode(
@@ -82,6 +106,54 @@ jxl = jxlpy.encode(
     ],
 )
 ```
+
+The mapping form exposes the complete public extra-channel metadata:
+
+```python
+{
+    "name": "depth",
+    "type": "depth",
+    "data": depth_u16,            # full-resolution plane
+    "bits_per_sample": 16,
+    "exponent_bits_per_sample": 0,
+    "dim_shift": 1,               # codestream downsampling metadata
+    "alpha_premultiplied": False, # alpha channels only
+    "spot_color": (0, 0, 0, 0),  # linear RGBA, spot channels only
+    "cfa_channel": 0,             # CFA channels only
+}
+```
+
+Decoded channel dictionaries return these fields plus `xsize`, `ysize`, and
+`exponent_bits_per_sample`. The public libjxl decoder outputs full-resolution
+extra planes even when `dim_shift` is nonzero. `jxlpy.info()` returns the same
+metadata under `extra_channels` without decoding pixel planes.
+
+`dim_shift` accepts `0..3`. A nonzero value instructs libjxl to downsample that
+plane in the codestream, so it is not byte-exact even when the main encode is
+lossless. jxlpy automatically raises `ec_resampling` to at least
+`2 ** dim_shift`; an explicitly smaller value is rejected instead of failing
+later in `JxlEncoderProcessOutput`.
+
+## Color Metadata
+
+Array and multi-frame encoding can declare a structured color encoding or an
+ICC profile. They are mutually exclusive.
+
+```python
+jxl = jxlpy.encode(rgb, color_encoding="linear_srgb")
+jxl = jxlpy.encode(rgb, icc_profile="display.icc")
+```
+
+Structured presets are `srgb`, `linear_srgb`, `gray_srgb`, `linear_gray`,
+`display_p3`, `rec2100_pq`, and `rec2100_hlg`. A mapping can directly set the
+color-space, white-point, primaries, transfer-function, gamma, rendering intent,
+and custom xy coordinates. `info()` and decode metadata expose
+`color_encoding`, `color_profile_is_icc`, and `icc_profile` for the original
+profile. The corresponding decoder-output profile is exposed as
+`data_color_encoding`, `data_color_profile_is_icc`, and `data_icc_profile`.
+Overriding color metadata on JPEG input disables JPEG bitstream reconstruction
+and uses pixel-lossless/lossy encoding as requested, because an exact JPEG
+transcode cannot also change its color profile.
 
 Decode one channel:
 
@@ -126,12 +198,18 @@ Example:
 ```python
 jxl = jxlpy.encode_multiframe(
     frames,
+    durations=None,
     distance=0,
     effort=7,
     reference="auto",
     min_crop_ratio=0.98,
 )
 ```
+
+`durations=None` or `durations=0` creates true zero-duration layers and leaves
+`have_animation` false. Positive durations create animation frames; a list may
+mix zero-duration layers and timed frames. The default remains `durations=1`
+for backward compatibility.
 
 Experimental masked BLEND mode:
 
@@ -306,13 +384,23 @@ The wrapper does not try to be a complete `cjxl` command-line clone.
 Still not first-class API:
 
 - `--quality`: use `distance` directly.
-- `--dec-hints` and ICC/color-hint helpers.
+- `--dec-hints` for ambiguous input formats.
 - Exif/XMP/JUMBF file override helpers.
 - `--frame_indexing`.
 - CLI benchmark flags such as `--num_reps`, `--disable_output`, and verbose
   diagnostics.
-- Decode-side thread count.
 
 Some libjxl settings require more than a frame setting. For example, metadata
-box editing and custom ICC handling need additional input data plumbing, not
-only `JXL_ENC_FRAME_SETTING_*`.
+box editing needs additional input data plumbing, not only
+`JXL_ENC_FRAME_SETTING_*`.
+
+## Native ABI Compatibility
+
+The CFFI/native boundary is versioned. Import validates ABI version 2 and the
+native size of every shared structure before exposing the library. A stale or
+wrong-architecture `jxlpy_native` fails immediately with a rebuild message.
+After changing `native/jxlpy_native.h`, rebuild the shim before running Python:
+
+```bat
+.\scripts\build_windows.cmd jxlpy_native
+```

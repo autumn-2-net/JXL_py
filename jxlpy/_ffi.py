@@ -11,10 +11,22 @@ ffi = FFI()
 ffi.cdef(
     """
     enum {
+      JXLPY_NATIVE_ABI_VERSION = 2,
       JXLPY_DTYPE_UINT8 = 1,
       JXLPY_DTYPE_UINT16 = 2,
       JXLPY_DTYPE_FLOAT16 = 3,
       JXLPY_DTYPE_FLOAT32 = 4,
+    };
+
+    enum {
+      JXLPY_ABI_STRUCT_ENCODE_OPTIONS = 1,
+      JXLPY_ABI_STRUCT_EXTRA_CHANNEL = 2,
+      JXLPY_ABI_STRUCT_FRAME = 3,
+      JXLPY_ABI_STRUCT_RESULT = 4,
+      JXLPY_ABI_STRUCT_EXTRA_CHANNEL_RESULT = 5,
+      JXLPY_ABI_STRUCT_DECODE_ALL_RESULT = 6,
+      JXLPY_ABI_STRUCT_COLOR_ENCODING = 7,
+      JXLPY_ABI_STRUCT_ENCODER_SETTING = 8,
     };
 
     typedef struct {
@@ -23,6 +35,20 @@ ffi.cdef(
       int64_t int_value;
       float float_value;
     } jxlpy_encoder_setting;
+
+    typedef struct {
+      uint32_t available;
+      int32_t color_space;
+      int32_t white_point;
+      double white_point_xy[2];
+      int32_t primaries;
+      double primaries_red_xy[2];
+      double primaries_green_xy[2];
+      double primaries_blue_xy[2];
+      int32_t transfer_function;
+      double gamma;
+      int32_t rendering_intent;
+    } jxlpy_color_encoding;
 
     typedef struct {
       int lossless;
@@ -76,6 +102,10 @@ ffi.cdef(
       float modular_channel_colors_group_percent;
       const jxlpy_encoder_setting* extra_encoder_settings;
       size_t num_extra_encoder_settings;
+      int color_encoding_mode;
+      jxlpy_color_encoding color_encoding;
+      const uint8_t* icc_profile;
+      size_t icc_profile_size;
     } jxlpy_encode_options;
 
     typedef struct {
@@ -85,9 +115,14 @@ ffi.cdef(
       uint32_t ysize;
       uint32_t dtype;
       uint32_t bits_per_sample;
+      uint32_t exponent_bits_per_sample;
       uint32_t type;
       const char* name;
       size_t name_size;
+      uint32_t dim_shift;
+      uint32_t alpha_premultiplied;
+      float spot_color[4];
+      uint32_t cfa_channel;
     } jxlpy_extra_channel;
 
     typedef struct {
@@ -115,6 +150,7 @@ ffi.cdef(
       uint32_t bits_per_sample;
       uint32_t exponent_bits_per_sample;
       uint32_t num_frames;
+      uint32_t num_frames_known;
       uint32_t frame_index;
       uint32_t have_animation;
       uint32_t layer_have_crop;
@@ -127,9 +163,23 @@ ffi.cdef(
       uint32_t extra_channel_index;
       uint32_t extra_channel_type;
       char* extra_channel_name;
+      uint32_t extra_channel_dim_shift;
+      uint32_t extra_channel_alpha_premultiplied;
+      float extra_channel_spot_color[4];
+      uint32_t extra_channel_cfa_channel;
+      jxlpy_color_encoding color_encoding;
+      uint32_t color_profile_is_icc;
+      uint8_t* icc_profile;
+      size_t icc_profile_size;
+      jxlpy_color_encoding data_color_encoding;
+      uint32_t data_color_profile_is_icc;
+      uint8_t* data_icc_profile;
+      size_t data_icc_profile_size;
     } jxlpy_result;
 
     const char* jxlpy_version(void);
+    uint32_t jxlpy_abi_version(void);
+    size_t jxlpy_abi_struct_size(uint32_t struct_id);
     int jxlpy_supports_frame_settings_passthrough(void);
     void jxlpy_free_result(jxlpy_result* result);
 
@@ -161,11 +211,13 @@ ffi.cdef(
 
     jxlpy_result jxlpy_decode_jxl(
         const uint8_t* bytes, size_t size, int frame_index, int coalesced,
-        uint32_t requested_channels, uint32_t requested_dtype);
+        uint32_t requested_channels, uint32_t requested_dtype, int threads,
+        int scan_all_frames, uint64_t max_pixels, size_t max_output_bytes);
 
     jxlpy_result jxlpy_decode_extra_channel_jxl(
         const uint8_t* bytes, size_t size, int frame_index, int coalesced,
-        uint32_t extra_channel_index, uint32_t requested_dtype);
+        uint32_t extra_channel_index, uint32_t requested_dtype, int threads,
+        int scan_all_frames, uint64_t max_pixels, size_t max_output_bytes);
 
     typedef struct {
       uint32_t extra_channel_index;
@@ -173,6 +225,12 @@ ffi.cdef(
       uint32_t bits_per_sample;
       uint32_t exponent_bits_per_sample;
       uint32_t dtype;
+      uint32_t xsize;
+      uint32_t ysize;
+      uint32_t dim_shift;
+      uint32_t alpha_premultiplied;
+      float spot_color[4];
+      uint32_t cfa_channel;
       char* extra_channel_name;
       uint8_t* data;
       size_t size;
@@ -190,6 +248,7 @@ ffi.cdef(
       uint32_t bits_per_sample;
       uint32_t exponent_bits_per_sample;
       uint32_t num_frames;
+      uint32_t num_frames_known;
       uint32_t frame_index;
       uint32_t have_animation;
       uint32_t layer_have_crop;
@@ -200,11 +259,20 @@ ffi.cdef(
       uint32_t duration;
       uint32_t num_extra_channels;
       jxlpy_extra_channel_result* extra_channels;
+      jxlpy_color_encoding color_encoding;
+      uint32_t color_profile_is_icc;
+      uint8_t* icc_profile;
+      size_t icc_profile_size;
+      jxlpy_color_encoding data_color_encoding;
+      uint32_t data_color_profile_is_icc;
+      uint8_t* data_icc_profile;
+      size_t data_icc_profile_size;
     } jxlpy_decode_all_result;
 
     jxlpy_decode_all_result jxlpy_decode_all_jxl(
         const uint8_t* bytes, size_t size, int frame_index, int coalesced,
-        uint32_t requested_channels, uint32_t requested_dtype);
+        uint32_t requested_channels, uint32_t requested_dtype, int threads,
+        int scan_all_frames, uint64_t max_pixels, size_t max_output_bytes);
 
     void jxlpy_free_decode_all_result(jxlpy_decode_all_result* result);
 
@@ -212,6 +280,9 @@ ffi.cdef(
         const uint8_t* bytes, size_t size, int frame_index);
 
     jxlpy_result jxlpy_info(const uint8_t* bytes, size_t size);
+
+    jxlpy_decode_all_result jxlpy_info_all(
+        const uint8_t* bytes, size_t size);
 
     jxlpy_result jxlpy_reconstruct_jpeg(const uint8_t* bytes, size_t size);
 
@@ -251,6 +322,17 @@ def _candidate_paths() -> list[Path]:
 
 _DLL_DIR_HANDLES = []
 
+_ABI_STRUCTS = {
+    1: "jxlpy_encode_options",
+    2: "jxlpy_extra_channel",
+    3: "jxlpy_frame",
+    4: "jxlpy_result",
+    5: "jxlpy_extra_channel_result",
+    6: "jxlpy_decode_all_result",
+    7: "jxlpy_color_encoding",
+    8: "jxlpy_encoder_setting",
+}
+
 
 def _add_dll_dirs(path: Path) -> None:
     if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
@@ -266,6 +348,31 @@ def _add_dll_dirs(path: Path) -> None:
             pass
 
 
+def _validate_abi(native, path: Path) -> None:
+    try:
+        version = int(native.jxlpy_abi_version())
+    except (AttributeError, TypeError) as exc:
+        raise RuntimeError(
+            f"{path} predates the checked native ABI; rebuild jxlpy_native"
+        ) from exc
+    expected = int(ffi.cast("uint32_t", 2))
+    if version != expected:
+        raise RuntimeError(
+            f"{path} has native ABI {version}, but Python expects {expected}; "
+            "rebuild jxlpy_native"
+        )
+    mismatches = []
+    for struct_id, c_name in _ABI_STRUCTS.items():
+        native_size = int(native.jxlpy_abi_struct_size(struct_id))
+        python_size = int(ffi.sizeof(c_name))
+        if native_size != python_size:
+            mismatches.append(f"{c_name}: native={native_size}, cffi={python_size}")
+    if mismatches:
+        raise RuntimeError(
+            f"{path} has incompatible ABI structure sizes: " + "; ".join(mismatches)
+        )
+
+
 def _load():
     attempted: list[str] = []
     errors: list[str] = []
@@ -274,8 +381,10 @@ def _load():
         if path.exists():
             _add_dll_dirs(path)
             try:
-                return ffi.dlopen(str(path))
-            except OSError as e:
+                native = ffi.dlopen(str(path))
+                _validate_abi(native, path)
+                return native
+            except (AttributeError, OSError, RuntimeError) as e:
                 errors.append(f"  {path}: {e}")
     msg = "Cannot find or load jxlpy_native. Build it with CMake first or set JXLPY_NATIVE_LIB."
     msg += "\nSearched:\n" + "\n".join(f"  {p}" for p in attempted)

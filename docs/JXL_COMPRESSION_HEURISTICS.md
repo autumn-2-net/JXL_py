@@ -75,10 +75,22 @@ exact archive decisions should use the full image.
 | Metric | Meaning |
 |---|---|
 | `entropy_gray` | Shannon entropy of grayscale histogram, in bits. Lower means simpler. |
+| `unique_ratio` | Unique sampled colors divided by sampled pixels. Stable across sample budgets. |
 | `unique_per_mpx` | Unique RGBA or RGB colors per megapixel. Lower means palette-like or flat. |
 | `flat4_pct` | Percentage of 4x4 blocks where all pixels are identical. |
 | `near_white_pct` | Percentage of pixels close to white, useful for documents. |
 | `edge_mean` | Mean neighbor difference. Lower usually means flatter regions. |
+
+Sampling uses an evenly distributed 2D grid for histogram/color metrics.
+`flat4_pct` and `edge_mean` are different: their sample origins are distributed,
+but every comparison uses genuinely adjacent source pixels. Computing them on a
+strided thumbnail would compare pixels several columns apart and can turn a
+checkerboard or thin text into a false flat region. Color uniqueness uses packed
+pixel keys rather than an axis-wise sort.
+
+Paths, encoded bytes, NumPy arrays, and Torch tensors share the same pixel
+analysis path. Source format is detected from both suffixes and byte signatures,
+so JPEG bytes and a `.jpg` path receive the same exact-transcode recommendation.
 
 For exact RGBA processing, always include every channel in comparisons. Do not
 ignore RGB values behind `alpha=0`, because training/archive workflows may care

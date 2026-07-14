@@ -8,6 +8,14 @@ from typing import Any, Iterable
 import numpy as np
 
 from ._ffi import ffi, lib
+from .metadata import (
+    EXTRA_TYPE_TO_NATIVE as _EXTRA_TYPE_TO_NATIVE,
+    NATIVE_EXTRA_TYPE as _NATIVE_EXTRA_TYPE,
+    color_encoding_to_dict as _color_encoding_to_dict,
+    fill_color_encoding as _fill_color_encoding,
+    parse_extra_channel as _parse_extra_channel,
+    read_icc_profile as _read_icc_profile,
+)
 from .multiframe import (
     analyze_frame_arrays as _analyze_frame_arrays,
     changed_mask as _changed_mask,
@@ -31,20 +39,6 @@ _NATIVE_TO_DTYPE = {
     lib.JXLPY_DTYPE_FLOAT32: np.dtype("float32"),
 }
 
-_EXTRA_TYPE_TO_NATIVE = {
-    "alpha": 0,
-    "depth": 1,
-    "spot_color": 2,
-    "selection_mask": 3,
-    "black": 4,
-    "cfa": 5,
-    "thermal": 6,
-    "unknown": 15,
-    "optional": 16,
-}
-
-_NATIVE_EXTRA_TYPE = {value: key for key, value in _EXTRA_TYPE_TO_NATIVE.items()}
-
 _BLEND_MODE_TO_NATIVE = {
     "replace": 0,
     "add": 1,
@@ -60,7 +54,7 @@ class _NativeResult:
     meta: dict[str, Any]
 
 
-def _read_bytes(src: Any) -> bytes:
+def _read_bytes(src: Any) -> bytes | bytearray | memoryview:
     if isinstance(src, Path):
         return src.read_bytes()
     if isinstance(src, str):
@@ -68,14 +62,17 @@ def _read_bytes(src: Any) -> bytes:
     if isinstance(src, bytes):
         return src
     if isinstance(src, bytearray):
-        return bytes(src)
+        return src
     if isinstance(src, memoryview):
-        return src.tobytes()
+        if not src.contiguous:
+            return memoryview(src.tobytes())
+        return src if src.format == "B" and src.ndim == 1 else src.cast("B")
     raise TypeError("expected a path or bytes-like object")
 
 
-def _is_jxl(data: bytes) -> bool:
-    return data.startswith(b"\xff\x0a") or data.startswith(
+def _is_jxl(data: bytes | bytearray | memoryview) -> bool:
+    prefix = bytes(memoryview(data)[:12])
+    return prefix.startswith(b"\xff\x0a") or prefix.startswith(
         b"\x00\x00\x00\x0cJXL \x0d\x0a\x87\x0a"
     )
 
@@ -152,17 +149,6 @@ def _looks_like_frame_sequence(value: Any, count: int) -> bool:
     if _is_tensor(value):
         return False
     return isinstance(value, (list, tuple)) and len(value) == count
-
-
-def _extra_type_id(value: Any) -> int:
-    if value is None:
-        return _EXTRA_TYPE_TO_NATIVE["unknown"]
-    if isinstance(value, str):
-        key = value.lower().replace("-", "_")
-        if key not in _EXTRA_TYPE_TO_NATIVE:
-            raise ValueError(f"unknown extra channel type: {value!r}")
-        return _EXTRA_TYPE_TO_NATIVE[key]
-    return int(value)
 
 
 def _optional_int(value: int | None) -> int:
@@ -386,31 +372,6 @@ def _merge_encoder_options(
     return merged_frame_settings
 
 
-def _parse_extra_spec(spec: Any) -> tuple[str, int, int, Any]:
-    name = ""
-    type_id = _EXTRA_TYPE_TO_NATIVE["unknown"]
-    bits_per_sample = 0
-    data = spec
-
-    if isinstance(spec, dict):
-        data = spec["data"]
-        name = str(spec.get("name", ""))
-        type_id = _extra_type_id(spec.get("type", "unknown"))
-        bits_per_sample = int(spec.get("bits_per_sample", 0))
-    elif isinstance(spec, tuple):
-        if len(spec) == 2:
-            name = str(spec[0])
-            data = spec[1]
-        elif len(spec) == 3:
-            name = str(spec[0])
-            type_id = _extra_type_id(spec[1])
-            data = spec[2]
-        else:
-            raise ValueError("extra channel tuple must be (name, data) or (name, type, data)")
-
-    return name, type_id, bits_per_sample, data
-
-
 def _make_extra_structs(
     specs: Iterable[Any] | None,
     *,
@@ -419,31 +380,36 @@ def _make_extra_structs(
 ):
     specs = list(specs or [])
     c_extras = ffi.new("jxlpy_extra_channel[]", len(specs))
-    buffers: list[bytes] = []
+    buffers: list[np.ndarray] = []
     c_buffers = []
     name_buffers = []
 
     for i, spec in enumerate(specs):
-        name, type_id, bits_per_sample, data = _parse_extra_spec(spec)
-        arr = _as_extra_array(data, layout=layout)
+        parsed = _parse_extra_channel(spec)
+        arr = _as_extra_array(parsed.data, layout=layout)
         if arr.shape != expected_hw:
             raise ValueError("extra channel dimensions must match the main image")
-        raw = arr.tobytes()
-        buffers.append(raw)
-        c_buf = ffi.from_buffer(raw)
+        buffers.append(arr)
+        c_buf = ffi.from_buffer(arr)
         c_buffers.append(c_buf)
-        name_bytes = name.encode("utf-8")
+        name_bytes = parsed.name.encode("utf-8")
         c_name = ffi.new("char[]", name_bytes) if name_bytes else ffi.NULL
         name_buffers.append(c_name)
         c_extras[i].pixels = c_buf
-        c_extras[i].size = len(raw)
+        c_extras[i].size = arr.nbytes
         c_extras[i].xsize = arr.shape[1]
         c_extras[i].ysize = arr.shape[0]
         c_extras[i].dtype = _DTYPE_TO_NATIVE[arr.dtype]
-        c_extras[i].bits_per_sample = bits_per_sample
-        c_extras[i].type = type_id
+        c_extras[i].bits_per_sample = parsed.bits_per_sample
+        c_extras[i].exponent_bits_per_sample = parsed.exponent_bits_per_sample
+        c_extras[i].type = parsed.type_id
         c_extras[i].name = c_name
         c_extras[i].name_size = len(name_bytes)
+        c_extras[i].dim_shift = parsed.dim_shift
+        c_extras[i].alpha_premultiplied = 1 if parsed.alpha_premultiplied else 0
+        for channel, value in enumerate(parsed.spot_color):
+            c_extras[i].spot_color[channel] = value
+        c_extras[i].cfa_channel = parsed.cfa_channel
 
     return c_extras, buffers, c_buffers, name_buffers
 
@@ -457,24 +423,68 @@ def _extra_specs_to_frame_arrays(
 ):
     channels = []
     for spec in list(specs or []):
-        name, type_id, bits_per_sample, data = _parse_extra_spec(spec)
-        if _looks_like_frame_sequence(data, frame_count):
-            arrays = [_as_extra_array(item, layout=layout) for item in data]
+        parsed = _parse_extra_channel(spec)
+        if _looks_like_frame_sequence(parsed.data, frame_count):
+            arrays = [_as_extra_array(item, layout=layout) for item in parsed.data]
         else:
-            one = _as_extra_array(data, layout=layout)
+            one = _as_extra_array(parsed.data, layout=layout)
             arrays = [one for _ in range(frame_count)]
         for arr in arrays:
             if arr.shape != expected_hw:
                 raise ValueError("extra channel dimensions must match every frame")
         channels.append(
             {
-                "name": name,
-                "type_id": type_id,
-                "bits_per_sample": bits_per_sample,
+                "name": parsed.name,
+                "type_id": parsed.type_id,
+                "bits_per_sample": parsed.bits_per_sample,
+                "exponent_bits_per_sample": parsed.exponent_bits_per_sample,
+                "dim_shift": parsed.dim_shift,
+                "alpha_premultiplied": parsed.alpha_premultiplied,
+                "spot_color": parsed.spot_color,
+                "cfa_channel": parsed.cfa_channel,
                 "arrays": arrays,
             }
         )
     return channels
+
+
+def _ensure_dim_shift_resampling(
+    option_kwargs: dict[str, Any],
+    specs: Iterable[Any],
+    frame_settings: Iterable[Any],
+) -> None:
+    max_shift = max(
+        (
+            int(spec.dim_shift)
+            if hasattr(spec, "dim_shift")
+            else int(spec.get("dim_shift", 0))
+            for spec in specs
+        ),
+        default=0,
+    )
+    if max_shift == 0:
+        return
+
+    required = 1 << max_shift
+    configured = option_kwargs.get("ec_resampling")
+    if configured is None or int(configured) == -1:
+        option_kwargs["ec_resampling"] = required
+    elif int(configured) not in (1, 2, 4, 8):
+        raise ValueError("ec_resampling must be one of 1, 2, 4 or 8")
+    elif int(configured) < required:
+        raise ValueError(
+            f"dim_shift={max_shift} requires ec_resampling >= {required}"
+        )
+
+    for key, value in frame_settings:
+        if _normalize_frame_setting_key(key) != 3:
+            continue
+        is_float, int_value, _ = _coerce_frame_setting_value(3, value)
+        if is_float or int_value not in (2, 4, 8) or int_value < required:
+            raise ValueError(
+                "extra_channel_resampling in frame_settings conflicts with "
+                f"dim_shift={max_shift}; use {required} or greater"
+            )
 
 
 def _options(
@@ -530,6 +540,8 @@ def _options(
     modular_channel_colors_group_percent: float | None = None,
     pre_compact: float | None = None,
     post_compact: float | None = None,
+    color_encoding: str | Mapping[str, Any] | None = None,
+    icc_profile: Any = None,
     tps: tuple[int, int] = (1000, 1),
     frame_settings: Any = None,
     _keepalive: list[Any] | None = None,
@@ -626,6 +638,20 @@ def _options(
         modular_channel_colors_group_percent
     )
     keepalive = [] if _keepalive is None else _keepalive
+    if color_encoding is not None and icc_profile is not None:
+        raise ValueError("set either color_encoding or icc_profile, not both")
+    if color_encoding is not None:
+        opts.color_encoding_mode = 1
+        _fill_color_encoding(opts.color_encoding, color_encoding)
+    elif icc_profile is not None:
+        icc_data = _read_icc_profile(icc_profile)
+        if not icc_data:
+            raise ValueError("icc_profile must not be empty")
+        c_icc = ffi.from_buffer(icc_data)
+        keepalive.extend((icc_data, c_icc))
+        opts.color_encoding_mode = 2
+        opts.icc_profile = c_icc
+        opts.icc_profile_size = len(icc_data)
     c_settings, num_settings = _make_frame_settings(frame_settings, keepalive)
     opts.extra_encoder_settings = c_settings
     opts.num_extra_encoder_settings = num_settings
@@ -638,6 +664,16 @@ def _meta_from_result(result) -> dict[str, Any]:
         if result.extra_channel_name != ffi.NULL
         else ""
     )
+    icc_profile = (
+        bytes(ffi.buffer(result.icc_profile, result.icc_profile_size))
+        if result.icc_profile_size
+        else None
+    )
+    data_icc_profile = (
+        bytes(ffi.buffer(result.data_icc_profile, result.data_icc_profile_size))
+        if result.data_icc_profile_size
+        else None
+    )
     return {
         "xsize": int(result.xsize),
         "ysize": int(result.ysize),
@@ -646,6 +682,7 @@ def _meta_from_result(result) -> dict[str, Any]:
         "bits_per_sample": int(result.bits_per_sample),
         "exponent_bits_per_sample": int(result.exponent_bits_per_sample),
         "num_frames": int(result.num_frames),
+        "num_frames_known": bool(result.num_frames_known),
         "frame_index": int(result.frame_index),
         "have_animation": bool(result.have_animation),
         "layer_have_crop": bool(result.layer_have_crop),
@@ -660,6 +697,22 @@ def _meta_from_result(result) -> dict[str, Any]:
             int(result.extra_channel_type), "unknown"
         ),
         "extra_channel_name": extra_name,
+        "extra_channel_dim_shift": int(result.extra_channel_dim_shift),
+        "extra_channel_alpha_premultiplied": bool(
+            result.extra_channel_alpha_premultiplied
+        ),
+        "extra_channel_spot_color": tuple(
+            float(value) for value in result.extra_channel_spot_color
+        ),
+        "extra_channel_cfa_channel": int(result.extra_channel_cfa_channel),
+        "color_encoding": _color_encoding_to_dict(result.color_encoding),
+        "color_profile_is_icc": bool(result.color_profile_is_icc),
+        "icc_profile": icc_profile,
+        "data_color_encoding": _color_encoding_to_dict(
+            result.data_color_encoding
+        ),
+        "data_color_profile_is_icc": bool(result.data_color_profile_is_icc),
+        "data_icc_profile": data_icc_profile,
     }
 
 
@@ -679,6 +732,52 @@ def _consume_result(result) -> _NativeResult:
         lib.jxlpy_free_result(holder)
 
 
+def _consume_pixels_result(
+    result,
+    out: str,
+    *,
+    plane: bool = False,
+    max_pixels: int = 0,
+    max_output_bytes: int = 0,
+) -> tuple[Any, dict[str, Any]]:
+    holder = ffi.new("jxlpy_result *", result)
+    try:
+        if not result.ok:
+            message = (
+                ffi.string(result.error).decode("utf-8", "replace")
+                if result.error != ffi.NULL
+                else "native call failed"
+            )
+            raise RuntimeError(message)
+        meta = _meta_from_result(result)
+        pixels = meta["xsize"] * meta["ysize"]
+        if max_pixels and pixels > max_pixels:
+            raise RuntimeError("decoded image exceeds max_pixels")
+        if max_output_bytes and int(result.size) > max_output_bytes:
+            raise RuntimeError("decoded image exceeds max_output_bytes")
+        if out == "raw":
+            return bytes(ffi.buffer(result.data, result.size)), meta
+        dtype = meta["dtype"]
+        if dtype is None:
+            raise RuntimeError("native decoder returned an unknown dtype")
+        array = np.frombuffer(ffi.buffer(result.data, result.size), dtype=dtype)
+        shape = (
+            (meta["ysize"], meta["xsize"])
+            if plane
+            else (meta["ysize"], meta["xsize"], meta["num_channels"])
+        )
+        array = array.reshape(shape).copy()
+        if out == "numpy":
+            return array, meta
+        if out == "torch":
+            import torch
+
+            return torch.from_numpy(array), meta
+        raise ValueError("out must be 'numpy', 'torch' or 'raw'")
+    finally:
+        lib.jxlpy_free_result(holder)
+
+
 def _write_or_return(data: bytes, output: str | Path | None):
     if output is None:
         return data
@@ -694,6 +793,8 @@ def encode(
     *,
     layout: str = "auto",
     extra_channels: Iterable[Any] | None = None,
+    color_encoding: str | Mapping[str, Any] | None = None,
+    icc_profile: Any = None,
     bits_per_sample: int = 0,
     lossless: bool | None = None,
     distance: float | None = None,
@@ -750,6 +851,10 @@ def encode(
     frame_settings: Any = None,
 ):
     """Encode a path, encoded image bytes, numpy array or torch tensor to JXL."""
+    extra_channels = list(extra_channels or [])
+    parsed_extra_channels = [
+        _parse_extra_channel(spec) for spec in extra_channels
+    ]
     option_kwargs = dict(
         lossless=lossless,
         distance=distance,
@@ -802,9 +907,14 @@ def encode(
         modular_channel_colors_group_percent=modular_channel_colors_group_percent,
         pre_compact=pre_compact,
         post_compact=post_compact,
+        color_encoding=color_encoding,
+        icc_profile=icc_profile,
     )
     merged_frame_settings = _merge_encoder_options(
         option_kwargs, encoder_options, frame_settings
+    )
+    _ensure_dim_shift_resampling(
+        option_kwargs, parsed_extra_channels, merged_frame_settings
     )
     option_keepalive: list[Any] = []
     opts = _options(
@@ -814,7 +924,7 @@ def encode(
     )
 
     if isinstance(src, (str, Path, bytes, bytearray, memoryview)):
-        if extra_channels is not None and list(extra_channels):
+        if extra_channels:
             raise ValueError("extra_channels are only supported for array/tensor input")
         data = _read_bytes(src)
         c_data = ffi.from_buffer(data)
@@ -825,7 +935,7 @@ def encode(
     h, w, channels = arr.shape
     c_pixels = ffi.from_buffer(arr)
     c_extras, extra_buffers, extra_c_buffers, extra_names = _make_extra_structs(
-        extra_channels,
+        parsed_extra_channels,
         expected_hw=(h, w),
         layout=layout,
     )
@@ -844,30 +954,22 @@ def encode(
     return _write_or_return(_consume_result(result).data, output)
 
 
-def _decode_to_array(native: _NativeResult) -> np.ndarray:
-    dtype = native.meta["dtype"]
+def _copy_native_output(pointer, size: int, dtype, shape, out: str):
+    if out == "raw":
+        return bytes(ffi.buffer(pointer, size)) if size else b""
     if dtype is None:
         raise RuntimeError("native decoder returned an unknown dtype")
-    arr = np.frombuffer(native.data, dtype=dtype)
-    return arr.reshape(
-        native.meta["ysize"], native.meta["xsize"], native.meta["num_channels"]
-    )
-
-
-def _plane_to_output(native: _NativeResult, out: str):
-    arr = _decode_to_array(native)[:, :, 0]
+    array = np.frombuffer(ffi.buffer(pointer, size), dtype=dtype).reshape(shape).copy()
     if out == "numpy":
-        return arr.copy()
+        return array
     if out == "torch":
         import torch
 
-        return torch.from_numpy(arr.copy())
-    if out == "raw":
-        return native.data
+        return torch.from_numpy(array)
     raise ValueError("out must be 'numpy', 'torch' or 'raw'")
 
 
-def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict[str, Any]]]:
+def _consume_decode_all_result(result, out: str) -> tuple[Any, dict[str, Any], list[dict[str, Any]]]:
     holder = ffi.new("jxlpy_decode_all_result *", result)
     try:
         if not result.ok:
@@ -877,11 +979,6 @@ def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict
                 else "native call failed"
             )
             raise RuntimeError(message)
-        color_data = (
-            bytes(ffi.buffer(result.color_data, result.color_size))
-            if result.color_size
-            else b""
-        )
         meta = {
             "xsize": int(result.xsize),
             "ysize": int(result.ysize),
@@ -890,6 +987,7 @@ def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict
             "bits_per_sample": int(result.bits_per_sample),
             "exponent_bits_per_sample": int(result.exponent_bits_per_sample),
             "num_frames": int(result.num_frames),
+            "num_frames_known": bool(result.num_frames_known),
             "frame_index": int(result.frame_index),
             "have_animation": bool(result.have_animation),
             "layer_have_crop": bool(result.layer_have_crop),
@@ -899,7 +997,36 @@ def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict
             "layer_ysize": int(result.layer_ysize),
             "duration": int(result.duration),
             "num_extra_channels": int(result.num_extra_channels),
+            "color_encoding": _color_encoding_to_dict(result.color_encoding),
+            "color_profile_is_icc": bool(result.color_profile_is_icc),
+            "icc_profile": (
+                bytes(ffi.buffer(result.icc_profile, result.icc_profile_size))
+                if result.icc_profile_size
+                else None
+            ),
+            "data_color_encoding": _color_encoding_to_dict(
+                result.data_color_encoding
+            ),
+            "data_color_profile_is_icc": bool(
+                result.data_color_profile_is_icc
+            ),
+            "data_icc_profile": (
+                bytes(
+                    ffi.buffer(
+                        result.data_icc_profile, result.data_icc_profile_size
+                    )
+                )
+                if result.data_icc_profile_size
+                else None
+            ),
         }
+        color_data = _copy_native_output(
+            result.color_data,
+            int(result.color_size),
+            meta["dtype"],
+            (meta["ysize"], meta["xsize"], meta["num_channels"]),
+            out,
+        )
         extras: list[dict[str, Any]] = []
         for i in range(int(result.num_extra_channels)):
             ec = result.extra_channels[i]
@@ -908,8 +1035,13 @@ def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict
                 if ec.extra_channel_name != ffi.NULL
                 else ""
             )
-            ec_data = (
-                bytes(ffi.buffer(ec.data, ec.size)) if ec.size else b""
+            ec_dtype = _NATIVE_TO_DTYPE.get(int(ec.dtype))
+            ec_data = _copy_native_output(
+                ec.data,
+                int(ec.size),
+                ec_dtype,
+                (int(ec.ysize), int(ec.xsize)),
+                out,
             )
             extras.append({
                 "index": int(ec.extra_channel_index),
@@ -919,29 +1051,18 @@ def _consume_decode_all_result(result) -> tuple[bytes, dict[str, Any], list[dict
                 "name": ec_name,
                 "bits_per_sample": int(ec.bits_per_sample),
                 "exponent_bits_per_sample": int(ec.exponent_bits_per_sample),
-                "dtype": _NATIVE_TO_DTYPE.get(int(ec.dtype)),
+                "dtype": ec_dtype,
+                "xsize": int(ec.xsize),
+                "ysize": int(ec.ysize),
+                "dim_shift": int(ec.dim_shift),
+                "alpha_premultiplied": bool(ec.alpha_premultiplied),
+                "spot_color": tuple(float(value) for value in ec.spot_color),
+                "cfa_channel": int(ec.cfa_channel),
                 "data": ec_data,
             })
         return color_data, meta, extras
     finally:
         lib.jxlpy_free_decode_all_result(holder)
-
-
-def _ec_data_to_output(ec_data: bytes, ec_meta: dict[str, Any], out: str):
-    dtype = ec_meta["dtype"]
-    if dtype is None:
-        raise RuntimeError("native decoder returned an unknown dtype for extra channel")
-    arr = np.frombuffer(ec_data, dtype=dtype)
-    arr = arr.reshape(ec_meta["ysize"], ec_meta["xsize"])
-    if out == "numpy":
-        return arr.copy()
-    if out == "torch":
-        import torch
-
-        return torch.from_numpy(arr.copy())
-    if out == "raw":
-        return ec_data
-    raise ValueError("out must be 'numpy', 'torch' or 'raw'")
 
 
 def decode_extra_channel(
@@ -952,19 +1073,37 @@ def decode_extra_channel(
     out: str = "numpy",
     coalesced: bool = True,
     return_info: bool = True,
+    threads: int = 0,
+    scan_all_frames: bool = False,
+    max_pixels: int = 0,
+    max_output_bytes: int = 0,
 ):
     """Decode one JPEG XL extra channel as a 2D plane."""
     data = _read_bytes(src)
     if not _is_jxl(data):
         raise ValueError("extra channel decode requires JPEG XL input")
+    if threads < 0 or max_pixels < 0 or max_output_bytes < 0:
+        raise ValueError("threads and decode limits must be non-negative")
     c_data = ffi.from_buffer(data)
-    native = _consume_result(
+    value, meta = _consume_pixels_result(
         lib.jxlpy_decode_extra_channel_jxl(
-            c_data, len(data), int(frame), 1 if coalesced else 0, int(index), 0
-        )
+            c_data,
+            len(data),
+            int(frame),
+            1 if coalesced else 0,
+            int(index),
+            0,
+            int(threads),
+            1 if scan_all_frames else 0,
+            int(max_pixels),
+            int(max_output_bytes),
+        ),
+        out,
+        plane=True,
+        max_pixels=max_pixels,
+        max_output_bytes=max_output_bytes,
     )
-    value = _plane_to_output(native, out)
-    return (value, native.meta) if return_info else value
+    return (value, meta) if return_info else value
 
 
 def decode(
@@ -976,77 +1115,81 @@ def decode(
     return_info: bool = False,
     return_extra_channels: bool = False,
     include_alpha_extra: bool = False,
+    threads: int = 0,
+    scan_all_frames: bool = False,
+    max_pixels: int = 0,
+    max_output_bytes: int = 0,
 ):
     """Decode JXL, PNG or JPEG bytes/path to numpy, torch or raw bytes."""
     data = _read_bytes(src)
     c_data = ffi.from_buffer(data)
     is_jxl = _is_jxl(data)
+    if threads < 0 or max_pixels < 0 or max_output_bytes < 0:
+        raise ValueError("threads and decode limits must be non-negative")
 
     if return_extra_channels and is_jxl:
         all_result = lib.jxlpy_decode_all_jxl(
-            c_data, len(data), int(frame), 1 if coalesced else 0, 0, 0
+            c_data,
+            len(data),
+            int(frame),
+            1 if coalesced else 0,
+            0,
+            0,
+            int(threads),
+            1 if scan_all_frames else 0,
+            int(max_pixels),
+            int(max_output_bytes),
         )
-        color_data, meta, extras = _consume_decode_all_result(all_result)
-
-        if out == "raw":
-            value: Any = color_data
-        else:
-            dtype = meta["dtype"]
-            if dtype is None:
-                raise RuntimeError("native decoder returned an unknown dtype")
-            arr = np.frombuffer(color_data, dtype=dtype)
-            arr = arr.reshape(meta["ysize"], meta["xsize"], meta["num_channels"])
-            if out == "numpy":
-                value = arr.copy()
-            elif out == "torch":
-                import torch
-
-                value = torch.from_numpy(arr.copy())
-            else:
-                raise ValueError("out must be 'numpy', 'torch' or 'raw'")
+        value, meta, extras = _consume_decode_all_result(all_result, out)
 
         ec_list: list[dict[str, Any]] = []
         for ec in extras:
             if not include_alpha_extra and ec["type"] == "alpha":
                 continue
-            ec_meta = {**ec, "xsize": meta["xsize"], "ysize": meta["ysize"]}
-            ec_out = _ec_data_to_output(ec["data"], ec_meta, out if out in ("numpy", "torch") else "raw")
             ec_list.append({
                 "index": ec["index"],
                 "name": ec["name"],
                 "type": ec["type"],
                 "bits_per_sample": ec["bits_per_sample"],
+                "exponent_bits_per_sample": ec["exponent_bits_per_sample"],
                 "dtype": ec["dtype"],
-                "data": ec_out,
+                "xsize": ec["xsize"],
+                "ysize": ec["ysize"],
+                "dim_shift": ec["dim_shift"],
+                "alpha_premultiplied": ec["alpha_premultiplied"],
+                "spot_color": ec["spot_color"],
+                "cfa_channel": ec["cfa_channel"],
+                "data": ec["data"],
             })
         meta["extra_channels"] = ec_list
         return (value, meta) if (return_info or return_extra_channels) else value
 
     if is_jxl:
         result = lib.jxlpy_decode_jxl(
-            c_data, len(data), int(frame), 1 if coalesced else 0, 0, 0
+            c_data,
+            len(data),
+            int(frame),
+            1 if coalesced else 0,
+            0,
+            0,
+            int(threads),
+            1 if scan_all_frames else 0,
+            int(max_pixels),
+            int(max_output_bytes),
         )
     else:
         result = lib.jxlpy_decode_image_bytes(c_data, len(data), int(frame))
-    native = _consume_result(result)
-
-    if out == "raw":
-        value = native.data
-    else:
-        arr = _decode_to_array(native)
-        if out == "numpy":
-            value = arr.copy()
-        elif out == "torch":
-            import torch
-
-            value = torch.from_numpy(arr.copy())
-        else:
-            raise ValueError("out must be 'numpy', 'torch' or 'raw'")
+    value, meta = _consume_pixels_result(
+        result,
+        out,
+        max_pixels=max_pixels,
+        max_output_bytes=max_output_bytes,
+    )
 
     if return_extra_channels:
-        native.meta["extra_channels"] = []
+        meta["extra_channels"] = []
 
-    return (value, native.meta) if (return_info or return_extra_channels) else value
+    return (value, meta) if (return_info or return_extra_channels) else value
 
 
 def decode_layer(
@@ -1057,6 +1200,10 @@ def decode_layer(
     return_info: bool = True,
     return_extra_channels: bool = False,
     include_alpha_extra: bool = False,
+    threads: int = 0,
+    scan_all_frames: bool = False,
+    max_pixels: int = 0,
+    max_output_bytes: int = 0,
 ):
     """Decode a non-coalesced JXL layer/crop instead of the full composed frame."""
     return decode(
@@ -1067,6 +1214,10 @@ def decode_layer(
         return_info=return_info,
         return_extra_channels=return_extra_channels,
         include_alpha_extra=include_alpha_extra,
+        threads=threads,
+        scan_all_frames=scan_all_frames,
+        max_pixels=max_pixels,
+        max_output_bytes=max_output_bytes,
     )
 
 
@@ -1088,12 +1239,17 @@ def _frame_arrays(frames: Iterable[Any], *, layout: str) -> list[np.ndarray]:
     return arrays
 
 
-def _durations(value: int | Iterable[int], count: int) -> list[int]:
-    if isinstance(value, int):
-        return [value] * count
-    out = [int(v) for v in value]
+def _durations(value: int | Iterable[int] | None, count: int) -> list[int]:
+    if value is None:
+        out = [0] * count
+    elif isinstance(value, int):
+        out = [value] * count
+    else:
+        out = [int(v) for v in value]
     if len(out) != count:
         raise ValueError("durations length must match frame count")
+    if any(duration < 0 or duration > 0xFFFFFFFF for duration in out):
+        raise ValueError("durations must be unsigned 32-bit tick counts")
     return out
 
 
@@ -1119,6 +1275,7 @@ def _additive_extra_specs(extra_specs: list[dict[str, Any]]) -> list[dict[str, A
         next_spec = dict(spec)
         next_spec["arrays"] = _additive_payloads(spec["arrays"])
         next_spec["bits_per_sample"] = 0
+        next_spec["exponent_bits_per_sample"] = 0
         out.append(next_spec)
     return out
 
@@ -1154,7 +1311,9 @@ def encode_multiframe(
     *,
     layout: str = "auto",
     extra_channels: Iterable[Any] | None = None,
-    durations: int | Iterable[int] = 1,
+    durations: int | Iterable[int] | None = 1,
+    color_encoding: str | Mapping[str, Any] | None = None,
+    icc_profile: Any = None,
     tps: tuple[int, int] = (1000, 1),
     reference: str = "auto",
     min_crop_ratio: float = 0.98,
@@ -1337,11 +1496,14 @@ def encode_multiframe(
         modular_channel_colors_group_percent=modular_channel_colors_group_percent,
         pre_compact=pre_compact,
         post_compact=post_compact,
+        color_encoding=color_encoding,
+        icc_profile=icc_profile,
         tps=tps,
     )
     merged_frame_settings = _merge_encoder_options(
         option_kwargs, encoder_options, frame_settings
     )
+    _ensure_dim_shift_resampling(option_kwargs, extra_specs, merged_frame_settings)
     option_keepalive: list[Any] = []
     opts = _options(
         **option_kwargs,
@@ -1445,12 +1607,12 @@ def encode_multiframe(
             if reference in ("previous", "auto"):
                 save_ref = 1
 
-        raw = np.ascontiguousarray(crop).tobytes()
-        buffers.append(raw)
-        c_buf = ffi.from_buffer(raw)
+        crop_buffer = np.ascontiguousarray(crop)
+        buffers.append(crop_buffer)
+        c_buf = ffi.from_buffer(crop_buffer)
         c_buffers.append(c_buf)
         c_frames[i].pixels = c_buf
-        c_frames[i].size = len(raw)
+        c_frames[i].size = crop_buffer.nbytes
         c_frames[i].xsize = crop.shape[1]
         c_frames[i].ysize = crop.shape[0]
         c_frames[i].have_crop = 1 if have_crop else 0
@@ -1468,22 +1630,32 @@ def encode_multiframe(
 
         for extra_i, (spec, extra_arr) in enumerate(zip(extra_specs, crop_extras)):
             flat_i = i * len(extra_specs) + extra_i
-            raw_extra = np.ascontiguousarray(extra_arr).tobytes()
-            extra_buffers.append(raw_extra)
-            c_extra_buf = ffi.from_buffer(raw_extra)
+            extra_buffer = np.ascontiguousarray(extra_arr)
+            extra_buffers.append(extra_buffer)
+            c_extra_buf = ffi.from_buffer(extra_buffer)
             extra_c_buffers.append(c_extra_buf)
             name_bytes = spec["name"].encode("utf-8")
             c_name = ffi.new("char[]", name_bytes) if name_bytes else ffi.NULL
             extra_name_buffers.append(c_name)
             c_extras[flat_i].pixels = c_extra_buf
-            c_extras[flat_i].size = len(raw_extra)
+            c_extras[flat_i].size = extra_buffer.nbytes
             c_extras[flat_i].xsize = extra_arr.shape[1]
             c_extras[flat_i].ysize = extra_arr.shape[0]
             c_extras[flat_i].dtype = _DTYPE_TO_NATIVE[extra_arr.dtype]
             c_extras[flat_i].bits_per_sample = int(spec["bits_per_sample"])
+            c_extras[flat_i].exponent_bits_per_sample = int(
+                spec.get("exponent_bits_per_sample", 0)
+            )
             c_extras[flat_i].type = int(spec["type_id"])
             c_extras[flat_i].name = c_name
             c_extras[flat_i].name_size = len(name_bytes)
+            c_extras[flat_i].dim_shift = int(spec.get("dim_shift", 0))
+            c_extras[flat_i].alpha_premultiplied = (
+                1 if spec.get("alpha_premultiplied", False) else 0
+            )
+            for channel, value in enumerate(spec.get("spot_color", (0, 0, 0, 0))):
+                c_extras[flat_i].spot_color[channel] = float(value)
+            c_extras[flat_i].cfa_channel = int(spec.get("cfa_channel", 0))
 
     result = lib.jxlpy_encode_multiframe_ex(
         c_frames,
@@ -1505,8 +1677,16 @@ def info(src: Any) -> dict[str, Any]:
     data = _read_bytes(src)
     c_data = ffi.from_buffer(data)
     if _is_jxl(data):
-        return _consume_result(lib.jxlpy_info(c_data, len(data))).meta
+        _, meta, extras = _consume_decode_all_result(
+            lib.jxlpy_info_all(c_data, len(data)), "raw"
+        )
+        meta["extra_channels"] = [
+            {key: value for key, value in channel.items() if key != "data"}
+            for channel in extras
+        ]
+        return meta
     native = _consume_result(lib.jxlpy_decode_image_bytes(c_data, len(data), 0))
+    native.meta["extra_channels"] = []
     return native.meta
 
 

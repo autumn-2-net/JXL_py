@@ -16,6 +16,7 @@ class ImageMetrics:
     sampled_pixels: int
     entropy_gray: float
     unique_colors: int
+    unique_ratio: float
     unique_per_mpx: float
     flat4_pct: float
     near_white_pct: float
@@ -87,23 +88,11 @@ def analyze_pixels(
     ).astype(np.uint8)
 
     sampled_pixels = int(sample8.shape[0] * sample8.shape[1])
-    unique_colors = int(np.unique(sample8.reshape(-1, channels), axis=0).shape[0])
+    unique_colors = _unique_color_count(sample)
+    unique_ratio = unique_colors / max(1, sampled_pixels)
     unique_per_mpx = unique_colors / max(1, sampled_pixels) * 1_000_000.0
-
-    hh = (sample8.shape[0] // 4) * 4
-    ww = (sample8.shape[1] // 4) * 4
-    if hh and ww:
-        blocks = sample8[:hh, :ww].reshape(
-            hh // 4, 4, ww // 4, 4, channels
-        )
-        flat = np.all(blocks == blocks[:, :1, :, :1, :], axis=(1, 3, 4))
-        flat4_pct = float(np.mean(flat) * 100.0)
-    else:
-        flat4_pct = 0.0
-
-    rgb_i = rgb.astype(np.int16)
-    dx = np.abs(rgb_i[:, 1:] - rgb_i[:, :-1]).mean() if rgb.shape[1] > 1 else 0.0
-    dy = np.abs(rgb_i[1:] - rgb_i[:-1]).mean() if rgb.shape[0] > 1 else 0.0
+    flat4_pct = _flat4_pct(arr, max_sample_pixels)
+    edge_mean = _edge_mean(arr, max_sample_pixels)
 
     has_alpha = channels in (2, 4)
     opaque_alpha = False
@@ -123,11 +112,12 @@ def analyze_pixels(
         sampled_pixels=sampled_pixels,
         entropy_gray=_entropy_u8(gray),
         unique_colors=unique_colors,
+        unique_ratio=float(unique_ratio),
         unique_per_mpx=float(unique_per_mpx),
         flat4_pct=flat4_pct,
         near_white_pct=float(np.mean(np.all(rgb >= 245, axis=2)) * 100.0),
         near_black_pct=float(np.mean(np.all(rgb <= 16, axis=2)) * 100.0),
-        edge_mean=float((dx + dy) / 2.0),
+        edge_mean=edge_mean,
         has_alpha=has_alpha,
         opaque_alpha=opaque_alpha,
         transparent_pct=transparent_pct,
@@ -142,7 +132,7 @@ def analyze_image(
     max_sample_pixels: int = 1_000_000,
 ) -> ImageMetrics:
     """Decode a path/bytes input with jxlpy and compute selection metrics."""
-    if isinstance(source, np.ndarray):
+    if _is_pixel_input(source):
         pixels = source
     else:
         from .api import decode
@@ -164,10 +154,7 @@ def analyze_lossless(
 ) -> CompressionAnalysis:
     """Analyze an input and return metrics plus a small lossless candidate plan."""
     if source_format is None:
-        if isinstance(source, (str, Path)):
-            source_format = Path(source).suffix
-        else:
-            source_format = ""
+        source_format = _detect_source_format(source)
     metrics = analyze_image(
         source,
         layout=layout,
@@ -332,7 +319,7 @@ def recommend_lossless_candidates(
 
 
 def _as_hwc(value: Any, *, layout: str) -> np.ndarray:
-    arr = np.asarray(value)
+    arr = _as_numpy(value)
     if arr.ndim == 2:
         arr = arr[:, :, None]
     elif arr.ndim != 3:
@@ -357,8 +344,12 @@ def _sample(arr: np.ndarray, max_pixels: int) -> np.ndarray:
     pixels = int(arr.shape[0] * arr.shape[1])
     if max_pixels <= 0 or pixels <= max_pixels:
         return arr
-    step = int(np.ceil(np.sqrt(pixels / max_pixels)))
-    return arr[::step, ::step]
+    h, w = arr.shape[:2]
+    sample_h = min(h, max(1, int(np.sqrt(max_pixels * h / max(1, w)))))
+    sample_w = min(w, max(1, max_pixels // sample_h))
+    rows = np.linspace(0, h - 1, sample_h, dtype=np.intp)
+    cols = np.linspace(0, w - 1, sample_w, dtype=np.intp)
+    return np.ascontiguousarray(arr[rows[:, None], cols[None, :]])
 
 
 def _to_uint8(arr: np.ndarray) -> np.ndarray:
@@ -366,10 +357,116 @@ def _to_uint8(arr: np.ndarray) -> np.ndarray:
         return np.ascontiguousarray(arr)
     if arr.dtype == np.uint16:
         return np.ascontiguousarray((arr >> 8).astype(np.uint8))
-    values = arr.astype(np.float32)
-    if values.max(initial=0.0) <= 1.0:
+    values = arr.astype(np.float32, copy=False)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros(values.shape, dtype=np.uint8)
+    low = float(finite.min())
+    high = float(finite.max())
+    values = np.nan_to_num(values, nan=low, posinf=high, neginf=low)
+    if low >= 0.0 and high <= 1.0:
         values *= 255.0
+    elif low < 0.0 or high > 255.0:
+        robust_low, robust_high = np.percentile(finite, (0.5, 99.5))
+        if robust_high > robust_low:
+            values = (values - robust_low) * (255.0 / (robust_high - robust_low))
     return np.clip(values, 0.0, 255.0).astype(np.uint8)
+
+
+def _as_numpy(value: Any) -> np.ndarray:
+    if isinstance(value, np.ndarray):
+        return value
+    try:
+        import torch
+    except Exception:
+        torch = None
+    if torch is not None and isinstance(value, torch.Tensor):
+        return value.detach().cpu().contiguous().numpy()
+    return np.asarray(value)
+
+
+def _is_pixel_input(value: Any) -> bool:
+    if isinstance(value, np.ndarray):
+        return True
+    try:
+        import torch
+    except Exception:
+        return False
+    return isinstance(value, torch.Tensor)
+
+
+def _detect_source_format(source: Any) -> str:
+    if isinstance(source, (str, Path)):
+        return Path(source).suffix.lower().lstrip(".")
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        data = bytes(source[:16])
+        if data.startswith(b"\xff\xd8\xff"):
+            return "jpeg"
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if data.startswith(b"\xff\x0a") or data.startswith(
+            b"\x00\x00\x00\x0cJXL \x0d\x0a\x87\x0a"
+        ):
+            return "jxl"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "webp"
+        return "bytes"
+    if _is_pixel_input(source):
+        return "pixels"
+    return "unknown"
+
+
+def _unique_color_count(arr: np.ndarray) -> int:
+    flat = np.ascontiguousarray(arr.reshape(-1, arr.shape[2]))
+    packed = flat.view(np.dtype((np.void, flat.dtype.itemsize * flat.shape[1])))
+    return int(np.unique(packed).size)
+
+
+def _grid_axes(height: int, width: int, max_points: int) -> tuple[np.ndarray, np.ndarray]:
+    if height <= 0 or width <= 0 or max_points <= 0:
+        return np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp)
+    rows = min(height, max(1, int(np.sqrt(max_points * height / width))))
+    cols = min(width, max(1, max_points // rows))
+    return (
+        np.linspace(0, height - 1, rows, dtype=np.intp),
+        np.linspace(0, width - 1, cols, dtype=np.intp),
+    )
+
+
+def _flat4_pct(arr: np.ndarray, max_sample_pixels: int) -> float:
+    block_h = arr.shape[0] // 4
+    block_w = arr.shape[1] // 4
+    if block_h == 0 or block_w == 0:
+        return 0.0
+    max_blocks = max(1, max_sample_pixels // 16) if max_sample_pixels > 0 else block_h * block_w
+    block_rows, block_cols = _grid_axes(block_h, block_w, max_blocks)
+    rows = block_rows * 4
+    cols = block_cols * 4
+    base = arr[rows[:, None], cols[None, :]]
+    flat = np.ones(base.shape[:2], dtype=bool)
+    for y_offset in range(4):
+        for x_offset in range(4):
+            candidate = arr[
+                (rows + y_offset)[:, None], (cols + x_offset)[None, :]
+            ]
+            flat &= np.all(candidate == base, axis=2)
+    return float(np.mean(flat) * 100.0)
+
+
+def _edge_mean(arr: np.ndarray, max_sample_pixels: int) -> float:
+    limit = max_sample_pixels if max_sample_pixels > 0 else arr.shape[0] * arr.shape[1]
+    means = []
+    if arr.shape[1] > 1:
+        rows, cols = _grid_axes(arr.shape[0], arr.shape[1] - 1, limit)
+        left = _rgb(_to_uint8(arr[rows[:, None], cols[None, :]]))
+        right = _rgb(_to_uint8(arr[rows[:, None], (cols + 1)[None, :]]))
+        means.append(float(np.abs(left.astype(np.int16) - right.astype(np.int16)).mean()))
+    if arr.shape[0] > 1:
+        rows, cols = _grid_axes(arr.shape[0] - 1, arr.shape[1], limit)
+        top = _rgb(_to_uint8(arr[rows[:, None], cols[None, :]]))
+        bottom = _rgb(_to_uint8(arr[(rows + 1)[:, None], cols[None, :]]))
+        means.append(float(np.abs(top.astype(np.int16) - bottom.astype(np.int16)).mean()))
+    return float(np.mean(means)) if means else 0.0
 
 
 def _rgb(arr: np.ndarray) -> np.ndarray:
