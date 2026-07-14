@@ -44,6 +44,11 @@ jobs:
           cmake --build out/build --target jxlpy_native --config Release
           cmake --build out/build --target jxl_cli --config Release
 
+      - name: Run Python tests
+        run: |
+          python -B -m unittest discover -s tests -v
+          python -B scripts/smoke_jxlpy.py
+
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist/
 
@@ -105,6 +110,11 @@ jobs:
         run: |
           cmake --build out/build --target jxlpy_native --config Release
           cmake --build out/build --target jxl_cli --config Release
+
+      - name: Run Python tests
+        run: |
+          python -B -m unittest discover -s tests -v
+          python -B scripts/smoke_jxlpy.py
 
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist/

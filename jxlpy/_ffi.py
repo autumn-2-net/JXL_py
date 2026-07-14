@@ -315,6 +315,7 @@ def _candidate_paths() -> list[Path]:
     paths.append(package_dir / name)
 
     root = _repo_root()
+    paths.append(root / "out" / "build" / name)
     paths.extend(root.glob(f"out/build/*/{name}"))
     paths.extend(root.glob(f"out/build/*/*/{name}"))
     return paths
